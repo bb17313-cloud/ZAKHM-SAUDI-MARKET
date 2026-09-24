@@ -68,14 +68,13 @@ def screens():
 
 
 def run_screen(filters, columns, sort_col):
-    """جلب بيانات الأسهم السعودية من TradingView عبر سوق الخليج/السعودية المضمون."""
+    """جلب بيانات الأسهم السعودية من TradingView بدون أخطاء URL."""
     query = (
         Query()
-        .set_markets("gcc")
         .select(*columns)
         .where(
             col("type") == "stock",
-            col("country") == "Saudi Arabia",
+            col("exchange") == "TADAWUL",
             *filters
         )
         .order_by(sort_col, ascending=False)
