@@ -71,7 +71,7 @@ def run_screen(filters, columns, sort_col):
     """جلب بيانات الأسهم السعودية من TradingView."""
     query = (
         Query()
-        .set_markets("saudi")
+        .set_markets("saudi_arabia")  # تم التصحيح من saudi إلى saudi_arabia
         .select(*columns)
         .where(col("type") == "stock", *filters)
         .order_by(sort_col, ascending=False)
@@ -188,7 +188,7 @@ def main():
             ticker = str(row['name']).strip().upper()
             sector = str(row.get('sector', 'N/A')).strip()
             
-            # رابط الشارت المباشر للأسهم السعودية على TradingView (مثال: TADAWUL:2222)
+            # رابط الشارت المباشر للأسهم السعودية على TradingView
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
             
             price = float(row[price_c]) if row[price_c] else 0.0
