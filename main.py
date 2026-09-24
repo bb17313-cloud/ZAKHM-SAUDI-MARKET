@@ -87,12 +87,12 @@ def screens():
     """شروط الفلترة المباشرة."""
     buy = [
         col("close") > 0,
-        col("change") >= 0,  # جلب الأسهم المستقرة أو المرتفعة
+        col("change") >= 0,
     ]
 
     rev = [
         col("close") > 0,
-        col("change") > 1.5,  # ارتفاع أكثر من 1.5%
+        col("change") > 1.5,
     ]
 
     extra = ["close", "change", "volume"]
@@ -100,12 +100,12 @@ def screens():
 
 
 def run_screen(filters, columns, sort_col, tickers_list):
-    """جلب بيانات الأسهم مع تحديد السوق الرئيسي لـ TradingView."""
+    """جلب بيانات الأسهم المحددة عبر البحث العام مع تحديد بورصة تداول."""
     query = (
         Query()
-        .set_markets("saudi")
         .select(*columns)
         .where(
+            col("exchange") == "TADAWUL",
             col("name").isin(tickers_list),
             *filters
         )
