@@ -73,21 +73,34 @@ def get_saudi_stocks_dict():
 
 
 def is_market_open():
-    return True
+    """أوقات عمل السوق السعودي: من 9:45 ص إلى 3:40 م (الأحد - الخميس)"""
+    now = datetime.now(RIYADH)
+    if now.weekday() in [4, 5]:  # الجمعة والسبت
+        return False
+    
+    start_time = now.replace(hour=9, minute=45, second=0, microsecond=0)
+    end_time = now.replace(hour=15, minute=40, second=0, microsecond=0)
+    
+    return start_time <= now <= end_time
 
 
 def screens():
-    buy = [
+    """الشروط اللحظية والتسارع 0.5% وأكثر"""
+    momentum = [
         col("close") > 0,
+        col("change") >= 0.5,
+        col("volume") >= 20000,
+        col("close") > col("VWAP")
     ]
 
-    rev = [
+    acceleration = [
         col("close") > 0,
-        col("change") > 0.0,
+        col("change") >= 0.5,
+        col("volume") >= 30000
     ]
 
     extra = ["close", "change", "volume"]
-    return extra, "change", {"شراء": buy, "انعكاس": rev}
+    return extra, "change", {"زخم لحظي": momentum, "تسارع زخم": acceleration}
 
 
 def run_screen(filters, columns, sort_col, tickers_dict):
@@ -121,26 +134,24 @@ def load_seen():
         with open(SEEN_FILE) as f:
             data = json.load(f)
         if data.get("date") == today:
-            seen_keys = set(data.get("keys", []))
             counts = data.get("counts", {})
-            return today, seen_keys, counts
+            return today, counts
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    return today, set(), {}
+    return today, {}
 
 
-def save_seen(today, keys, counts):
+def save_seen(today, counts):
     with open(SEEN_FILE, "w") as f:
         json.dump({
             "date": today,
-            "keys": sorted(keys),
             "counts": counts
         }, f, indent=2)
 
 
 def send(text):
     if not TOKEN or not CHAT_ID:
-        print("تحذير: BOT_TOKEN أو CHAT_ID غير موجود، لن يتم الإرسال لتليجرام.")
+        print("تحذير: BOT_TOKEN أو CHAT_ID غير موجود.")
         return
     r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
@@ -173,7 +184,6 @@ def calculate_levels(price, high, low, ema20, ema50):
 
     return {
         "support_intraday": support_intraday,
-        "support_ilz": support_ilz,
         "t1": t1,
         "t2": t2,
         "t3": t3,
@@ -185,10 +195,10 @@ def calculate_levels(price, high, low, ema20, ema50):
 
 def main():
     if not is_market_open():
-        print("السوق مغلق حالياً.")
+        print("السوق مغلق حالياً (خارج أوقات التداول الرسمية 9:45 ص - 3:40 م).")
         return
 
-    today, seen, counts = load_seen()
+    today, counts = load_seen()
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
     
@@ -206,23 +216,19 @@ def main():
             continue
 
         if df is None or df.empty:
-            print(f"[السوق السعودي/{label}] 0 matches, 0 new")
+            print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
-        fresh = []
+        results = []
         for _, row in df.iterrows():
             ticker_name = str(row.get('clean_name', row['name'])).strip()
-            key = f"saudi:{label}:{ticker_name}"
-            if key not in seen:
-                seen.add(key)
-                fresh.append((ticker_name, row))
+            results.append((ticker_name, row))
 
-        print(f"[السوق السعودي/{label}] {len(df)} matches, {len(fresh)} new")
-        if not fresh:
-            continue
+        print(f"[السوق السعودي/{label}] {len(results)} matches")
 
-        lines = [f"<b>🇸🇦 السوق السعودي (تداول) | {label}</b>\n"]
-        for ticker, row in fresh[:MAX_SHOWN]:
+        lines = [f"🚨 <b>تحديث الزخم والأسهم | {label}</b>\n"]
+        
+        for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
             arabic_name = stocks_dict.get(ticker, ticker)
             sector = str(row.get('sector', 'N/A')).strip()
             
@@ -238,28 +244,15 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
-            curr_count = counts.get(ticker, 0)
-            if curr_count == 0:
-                counts[ticker] = 0
-                header = f"🔥 <b>دخول جديد: {arabic_name} ({ticker})</b>"
-                repeat_str = ""
-            else:
-                if change >= 1.5:
-                    curr_count += 1
-                    counts[ticker] = curr_count
-                
-                repeat_str = f" [<b>تنبيه {curr_count}</b>]" if curr_count > 0 else ""
-
-                if change >= 5.0:
-                    header = f"🔥 <b>تسارع زخم مفاجئ – {arabic_name} ({ticker})</b> (📈 +{change:.1f}%)"
-                else:
-                    header = f"🔥 <b>تحديث حركة {arabic_name} ({ticker})</b>"
+            # إدارة التنبيهات وزيادة العداد
+            curr_count = counts.get(ticker, 0) + 1
+            counts[ticker] = curr_count
 
             lvl = calculate_levels(price, high, low, ema20, ema50)
 
-            lines.append(f"{header}")
-            lines.append(f"القائمة 🚨{repeat_str}")
-            lines.append(f"🏛️ <b>القطاع:</b> {sector}")
+            lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
+            lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
+            lines.append(f"🏢 <b>القطاع:</b> {sector}")
             lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
             lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
             lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
@@ -269,13 +262,13 @@ def main():
                 lines.append(f"📊 <b>VWAP:</b> {vwap:.2f} ر.س")
             lines.append("-----------------------------------\n")
 
-        if len(fresh) > MAX_SHOWN:
-            lines.append(f"+{len(fresh) - MAX_SHOWN} أخرى\n")
+        if len(results) > MAX_SHOWN:
+            lines.append(f"+{len(results) - MAX_SHOWN} أخرى\n")
         lines.append("للفرز فقط، تأكد على الشارت قبل أي قرار.")
         
         send("\n".join(lines))
 
-    save_seen(today, seen, counts)
+    save_seen(today, counts)
     if had_error:
         sys.exit(1)
 
