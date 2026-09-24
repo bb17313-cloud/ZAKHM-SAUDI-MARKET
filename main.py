@@ -23,20 +23,20 @@ MAX_SHOWN = 10  # الحد الأقصى للأسهم لكل رسالة
 
 
 def is_market_open():
-    """تفعيل الإرجاع المباشر للاختبار وضمان التشغيل."""
+    """وضع الاختبار: يرجع True لتأكيد العمل والإرسال."""
     return True
 
 
 def screens():
-    """شروط تصفية بسيطة ومستقرة لضمان التقاط الأسهم المرتفعة."""
+    """شروط الفلترة المباشرة لضمان التقاط الأسهم."""
     buy = [
         col("close") > 1,
-        col("change") > 0.5,  # ارتفاع بأكثر من 0.5%
+        col("change") > 0.1,  # التقاط أي سهم مرتفع بأكثر من 0.1%
     ]
 
     rev = [
         col("close") > 1,
-        col("change") > 2.0,  # ارتفاع بقوة أكثر من 2%
+        col("change") > 2.0,  # ارتفاع أكثر من 2%
     ]
 
     extra = ["close", "change", "volume"]
@@ -44,20 +44,36 @@ def screens():
 
 
 def run_screen(filters, columns, sort_col):
-    """جلب بيانات الأسهم السعودية المباشرة عبر سيرفر global بدون أخطاء 404."""
+    """جلب بيانات الأسهم السعودية بدون تعارض مع معرفات الأسواق."""
+    # محاولة الاستعلام بمرونة عبر البورصة المباشرة
     query = (
         Query()
-        .set_markets("global")
         .select(*columns)
         .where(
             col("type") == "stock",
-            col("country") == "Saudi Arabia",
+            col("exchange").isin(["TADAWUL", "SAU"]),
             *filters
         )
         .order_by(sort_col, ascending=False)
         .limit(100)
     )
     _, df = query.get_scanner_data()
+    
+    # إذا كانت النتيجة فارغة، نحاول بالتصفية عن طريق الدولة
+    if df.empty:
+        query_alt = (
+            Query()
+            .select(*columns)
+            .where(
+                col("type") == "stock",
+                col("country") == "Saudi Arabia",
+                *filters
+            )
+            .order_by(sort_col, ascending=False)
+            .limit(100)
+        )
+        _, df = query_alt.get_scanner_data()
+
     return df
 
 
