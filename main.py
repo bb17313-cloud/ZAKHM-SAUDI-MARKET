@@ -1,4 +1,4 @@
-"""Saudi Stock Market (TADAWUL) Screener Bot.
+"""Saudi Stock Market (TADAWUL) Screener Bot - Fixed Market Screener.
 
 Runs the buy / reversal screens for the Saudi market session
 and sends NEW hits with dynamically calculated support/resistance and targets to Telegram.
@@ -19,11 +19,7 @@ CHAT_ID = os.environ["CHAT_ID"]
 RIYADH = ZoneInfo("Asia/Riyadh")
 SEEN_FILE = "seen_saudi.json"
 
-# شروط تخفيف السيولة للتأكد من التقاط جميع الأسهم المتحركة
-MIN_TURNOVER = 100_000         # الحد الأدنى للقيمة المداولة (بالريال)
-MIN_VOL_REGULAR = 10_000       # الحد الأدنى لعدد الأسهم المداولة
-
-MAX_SHOWN = 10                  # الحد الأقصى للأسهم لكل رسالة
+MAX_SHOWN = 10  # الحد الأقصى للأسهم لكل رسالة
 
 
 def is_market_open():
@@ -32,17 +28,15 @@ def is_market_open():
 
 
 def screens():
-    """شروط تصفية مبسطة للسوق السعودي لضمان التقاط الأسهم المرتفعة."""
+    """شروط تصفية بسيطة للسوق السعودي لضمان جلب النتائج."""
     buy = [
         col("close") > 1,
-        col("change") > 1.0,          # الأسهم المرتفعة أكثر من 1%
-        col("volume") >= MIN_VOL_REGULAR,
+        col("change") > 0.5,  # ارتفاع بأكثر من 0.5%
     ]
 
     rev = [
         col("close") > 1,
-        col("change") > 3.0,          # الأسهم المرتفعة بقوة (أكثر من 3%)
-        col("volume") >= MIN_VOL_REGULAR,
+        col("change") > 2.0,  # ارتفاع بقوة أكثر من 2%
     ]
 
     extra = ["close", "change", "volume"]
@@ -50,22 +44,20 @@ def screens():
 
 
 def run_screen(filters, columns, sort_col):
-    """جلب بيانات الأسهم السعودية مباشرة من TradingView."""
+    """جلب بيانات الأسهم السعودية بطريقة مباشرة من TradingView."""
     query = (
         Query()
+        .set_markets("saudi_arabia")
         .select(*columns)
         .where(
             col("type") == "stock",
-            col("exchange") == "TADAWUL",
             *filters
         )
         .order_by(sort_col, ascending=False)
-        .limit(150)
+        .limit(100)
     )
     _, df = query.get_scanner_data()
-    if df.empty:
-        return df
-    return df[df["close"] * df["average_volume_10d_calc"] > MIN_TURNOVER]
+    return df
 
 
 def load_seen():
@@ -145,7 +137,7 @@ def main():
     extra, sort_col, defs = screens()
     
     tech_cols = ["high", "low", "EMA21", "EMA50", "sector", "VWAP"]
-    columns = list(dict.fromkeys(["name", "close", "volume", "average_volume_10d_calc"] + extra + tech_cols))
+    columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
     had_error = False
 
@@ -155,6 +147,10 @@ def main():
         except Exception as e:  # noqa: BLE001
             print(f"[السوق السعودي/{label}] error: {e}")
             had_error = True
+            continue
+
+        if df is None or df.empty:
+            print(f"[السوق السعودي/{label}] 0 matches, 0 new")
             continue
 
         fresh = []
