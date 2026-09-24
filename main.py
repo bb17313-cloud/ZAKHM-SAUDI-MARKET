@@ -211,7 +211,7 @@ def main():
                     curr_count += 1
                     counts[ticker] = curr_count
                 
-                repeat_str = f" [<span style='color:red;'><b>تنبيه {curr_count}</b></span>]" if curr_count > 0 else ""
+                repeat_str = f" [<b>تنبيه {curr_count}</b>]" if curr_count > 0 else ""
 
                 if change >= 5.0:
                     header = f"🔥 <b>تسارع زخم مفاجئ – {ticker}</b> (📈 +{change:.1f}%)"
