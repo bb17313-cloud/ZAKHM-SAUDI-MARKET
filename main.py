@@ -1,6 +1,6 @@
-"""Saudi Stock Market (TADAWUL) Screener Bot.
+"""Saudi Stock Market (TADAWUL) Screener Bot - Test Mode.
 
-Runs the buy / reversal screens for the Saudi market session (10:00 - 15:15 + final check at 15:35)
+Runs the buy / reversal screens for the Saudi market session
 and sends NEW hits with dynamically calculated support/resistance and targets to Telegram.
 Needs env vars BOT_TOKEN and CHAT_ID.
 """
@@ -27,20 +27,8 @@ MAX_SHOWN = 10                  # الحد الأقصى للأسهم لكل رس
 
 
 def is_market_open():
-    """التحقق من أوقات تداول السوق السعودي (الأحد إلى الخميس من 10:00 إلى 15:35)."""
-    now = datetime.now(RIYADH)
-    
-    # عطلة نهاية الأسبوع في السعودية (الجمعة 4 والسبت 5)
-    if now.weekday() in (4, 5):
-        return False
-
-    minutes = now.hour * 60 + now.minute
-    
-    # من الساعة 10:00 صباحاً (600 دقيقة) حتى 15:35 مساءً (935 دقيقة)
-    if 10 * 60 <= minutes <= 15 * 60 + 35:
-        return True
-        
-    return False
+    """وضع الاختبار: يرجع True دائماً لتجربة الإرسال حتى لو كان السوق مغلقاً."""
+    return True
 
 
 def screens():
@@ -186,7 +174,7 @@ def main():
         if not fresh:
             continue
 
-        lines = [f"<b>🇸🇦 السوق السعودي (تداول) | {label}</b>\n"]
+        lines = [f"<b>🇸🇦 السوق السعودي (تداول) | {label} (اختبار)</b>\n"]
         for row in fresh[:MAX_SHOWN]:
             ticker = str(row['name']).strip().upper()
             sector = str(row.get('sector', 'N/A')).strip()
