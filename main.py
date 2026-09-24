@@ -1,4 +1,4 @@
-"""Saudi Stock Market (TADAWUL) Screener Bot - Test Mode.
+"""Saudi Stock Market (TADAWUL) Screener Bot.
 
 Runs the buy / reversal screens for the Saudi market session
 and sends NEW hits with dynamically calculated support/resistance and targets to Telegram.
@@ -19,44 +19,38 @@ CHAT_ID = os.environ["CHAT_ID"]
 RIYADH = ZoneInfo("Asia/Riyadh")
 SEEN_FILE = "seen_saudi.json"
 
-# شروط الحجم والسيولة للسوق السعودي (بالريال السعودي)
-MIN_TURNOVER = 1_000_000       # السعر × متوسط الحجم 10 أيام (بالريال)
-MIN_VOL_REGULAR = 100_000      # الحد الأدنى للحجم في الجلسة
+# شروط تخفيف السيولة للتأكد من التقاط جميع الأسهم المتحركة
+MIN_TURNOVER = 100_000         # الحد الأدنى للقيمة المداولة (بالريال)
+MIN_VOL_REGULAR = 10_000       # الحد الأدنى لعدد الأسهم المداولة
 
 MAX_SHOWN = 10                  # الحد الأقصى للأسهم لكل رسالة
 
 
 def is_market_open():
-    """وضع الاختبار: يرجع True دائماً لتجربة الإرسال حتى لو كان السوق مغلقاً."""
+    """تفعيل الإرجاع المباشر للاختبار وضمان التشغيل."""
     return True
 
 
 def screens():
-    """شروط التصفية للسوق السعودي (شراء وانعكاس)."""
-    trend_up = [col("EMA21") > col("EMA50")]
-    oversold = [col("close") < col("EMA21"), col("RSI") < 40]
-
+    """شروط تصفية مبسطة للسوق السعودي لضمان التقاط الأسهم المرتفعة."""
     buy = [
         col("close") > 1,
-        col("change") > 0,
+        col("change") > 1.0,          # الأسهم المرتفعة أكثر من 1%
         col("volume") >= MIN_VOL_REGULAR,
-        col("relative_volume_10d_calc") > 1,
-        col("Mom") > 0,
-    ] + trend_up
+    ]
 
     rev = [
         col("close") > 1,
-        col("change") > 1,
+        col("change") > 3.0,          # الأسهم المرتفعة بقوة (أكثر من 3%)
         col("volume") >= MIN_VOL_REGULAR,
-        col("relative_volume_10d_calc") > 1.5,
-    ] + oversold
+    ]
 
     extra = ["close", "change", "volume"]
-    return extra, "volume", {"شراء": buy, "انعكاس": rev}
+    return extra, "change", {"شراء": buy, "انعكاس": rev}
 
 
 def run_screen(filters, columns, sort_col):
-    """جلب بيانات الأسهم السعودية من TradingView بدون أخطاء URL."""
+    """جلب بيانات الأسهم السعودية مباشرة من TradingView."""
     query = (
         Query()
         .select(*columns)
@@ -114,7 +108,7 @@ def send(text):
 
 
 def calculate_levels(price, high, low, ema21, ema50):
-    """حساب مستويات الدعم والمقاومة والأهداف والوقف بناءً على منطق Auto-Flip و EMA."""
+    """حساب مستويات الدعم والمقاومة والأهداف والوقف."""
     pivot = (high + low + price) / 3
     
     r1 = (2 * pivot) - low if ((2 * pivot) - low) > price else price * 1.025
@@ -174,12 +168,11 @@ def main():
         if not fresh:
             continue
 
-        lines = [f"<b>🇸🇦 السوق السعودي (تداول) | {label} (اختبار)</b>\n"]
+        lines = [f"<b>🇸🇦 السوق السعودي (تداول) | {label}</b>\n"]
         for row in fresh[:MAX_SHOWN]:
             ticker = str(row['name']).strip().upper()
             sector = str(row.get('sector', 'N/A')).strip()
             
-            # رابط الشارت المباشر للأسهم السعودية على TradingView
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
             
             price = float(row[price_c]) if row[price_c] else 0.0
