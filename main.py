@@ -1,4 +1,4 @@
-"""Saudi Stock Market (TADAWUL) Screener Bot - Fixed Market Screener.
+"""Saudi Stock Market (TADAWUL) Screener Bot.
 
 Runs the buy / reversal screens for the Saudi market session
 and sends NEW hits with dynamically calculated support/resistance and targets to Telegram.
@@ -28,7 +28,7 @@ def is_market_open():
 
 
 def screens():
-    """شروط تصفية بسيطة للسوق السعودي لضمان جلب النتائج."""
+    """شروط تصفية بسيطة ومستقرة لضمان التقاط الأسهم المرتفعة."""
     buy = [
         col("close") > 1,
         col("change") > 0.5,  # ارتفاع بأكثر من 0.5%
@@ -44,13 +44,14 @@ def screens():
 
 
 def run_screen(filters, columns, sort_col):
-    """جلب بيانات الأسهم السعودية بطريقة مباشرة من TradingView."""
+    """جلب بيانات الأسهم السعودية المباشرة عبر سيرفر global بدون أخطاء 404."""
     query = (
         Query()
-        .set_markets("saudi_arabia")
+        .set_markets("global")
         .select(*columns)
         .where(
             col("type") == "stock",
+            col("country") == "Saudi Arabia",
             *filters
         )
         .order_by(sort_col, ascending=False)
