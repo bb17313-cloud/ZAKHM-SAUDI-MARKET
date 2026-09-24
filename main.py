@@ -92,25 +92,30 @@ def screens():
 
 
 def run_screen(filters, columns, sort_col, tickers_dict):
+    # تحديد السوق السعودي بشكل مباشر
     query = (
         Query()
+        .set_markets("saudi")
         .select(*columns)
-        .where(
-            col("typespecs").has("common"),
-            *filters
-        )
+        .where(*filters)
         .order_by(sort_col, ascending=False)
         .limit(300)
     )
     
     try:
         _, df = query.get_scanner_data()
-    except Exception:
+    except Exception as e:
+        print(f"Error querying scanner: {e}")
         df = None
 
     if df is not None and not df.empty:
-        df["clean_name"] = df["name"].astype(str).str.strip()
-        df = df[df["clean_name"].isin(tickers_dict.keys())]
+        # استخراج رمز السهم من الحقل المرتجع وتنظيفه
+        df["clean_name"] = df["name"].astype(str).str.replace("TADAWUL:", "").str.strip()
+        # تصفية البيانات لتطابق قائمتك
+        filtered_df = df[df["clean_name"].isin(tickers_dict.keys())]
+        if not filtered_df.empty:
+            return filtered_df
+        return df  # في حال عدم التطابق الحرفي، يتم إرجاع كل أسهم السوق المجلوبة
 
     return df
 
@@ -208,18 +213,18 @@ def main():
 
         fresh = []
         for _, row in df.iterrows():
-            key = f"saudi:{label}:{row['name']}"
+            ticker_name = str(row.get('clean_name', row['name'])).strip()
+            key = f"saudi:{label}:{ticker_name}"
             if key not in seen:
                 seen.add(key)
-                fresh.append(row)
+                fresh.append((ticker_name, row))
 
         print(f"[السوق السعودي/{label}] {len(df)} matches, {len(fresh)} new")
         if not fresh:
             continue
 
         lines = [f"<b>🇸🇦 السوق السعودي (تداول) | {label}</b>\n"]
-        for row in fresh[:MAX_SHOWN]:
-            ticker = str(row['name']).strip().upper()
+        for ticker, row in fresh[:MAX_SHOWN]:
             arabic_name = stocks_dict.get(ticker, ticker)
             sector = str(row.get('sector', 'N/A')).strip()
             
