@@ -1,6 +1,6 @@
 """Saudi Stock Market (TADAWUL) Screener Bot.
 
-Runs the buy / reversal screens for the 222 predefined Saudi stocks
+Runs the buy / reversal screens for the predefined Saudi stocks
 and sends NEW hits with dynamically calculated support/resistance and targets to Telegram.
 Needs env vars BOT_TOKEN and CHAT_ID.
 """
@@ -23,7 +23,7 @@ MAX_SHOWN = 10  # الحد الأقصى للأسهم لكل رسالة
 
 
 def get_saudi_stocks_dict():
-    """قائمة 222 سهمًا سعوديًا كاملة كما في الكود الأصلي"""
+    """قائمة 222 سهمًا سعوديًا"""
     return {
         "2030": "المصافي", "2222": "أرامكو السعودية", "2380": "بترو رابغ", "2381": "الحفر العربية",
         "2382": "اديس", "4030": "البحري", "1201": "تكوين", "1202": "ميكو", "1210": "بي سي آي",
@@ -84,15 +84,15 @@ def is_market_open():
 
 
 def screens():
-    """شروط التصفية لتحديد الأسهم الإيجابية المرتفعة."""
+    """شروط الفلترة المباشرة."""
     buy = [
-        col("close") > 1,
-        col("change") > 0.1,  # الأسهم المرتفعة بأكثر من 0.1%
+        col("close") > 0,
+        col("change") >= 0,  # جلب الأسهم المستقرة أو المرتفعة
     ]
 
     rev = [
-        col("close") > 1,
-        col("change") > 2.0,  # الأسهم المرتفعة بأكثر من 2%
+        col("close") > 0,
+        col("change") > 1.5,  # ارتفاع أكثر من 1.5%
     ]
 
     extra = ["close", "change", "volume"]
@@ -100,9 +100,10 @@ def screens():
 
 
 def run_screen(filters, columns, sort_col, tickers_list):
-    """جلب بيانات الـ 222 سهم المحددة حصراً وبدفعة واحدة."""
+    """جلب بيانات الأسهم مع تحديد السوق الرئيسي لـ TradingView."""
     query = (
         Query()
+        .set_markets("saudi")
         .select(*columns)
         .where(
             col("name").isin(tickers_list),
