@@ -218,9 +218,9 @@ def calculate_levels(price, high, low, ema20, ema50):
 
 
 def main():
-    if not is_market_open():#
-        print("السوق مغلق حالياً (خارج أوقات التداول الرسمية 9:45 ص - 3:40 م).")
-        return
+   # if not is_market_open():
+      #  print("السوق مغلق حالياً (خارج أوقات التداول الرسمية 9:45 ص - 3:40 م).")
+      #  return
 
     today, counts = load_seen()
     extra, sort_col, defs = screens()
