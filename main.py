@@ -85,7 +85,7 @@ def is_market_open():
 
 
 def screens():
-    """الشروط اللحظية والتسارع 0.5% وأكثر"""
+    """الشروط اللحظية، التسارع، والانفجار اللحظي"""
     momentum = [
         col("close") > 0,
         col("change") >= 0.5,
@@ -99,8 +99,20 @@ def screens():
         col("volume") >= 30000
     ]
 
+    explosion = [
+        col("close") > 0,
+        col("change") >= 0.5,
+        col("volume") >= 40000,
+        (col("change|1") >= 1.0) | (col("change|5") >= 1.0),
+        col("volume|1") >= col("SMA10|1") * 3
+    ]
+
     extra = ["close", "change", "volume"]
-    return extra, "change", {"زخم لحظي": momentum, "تسارع زخم": acceleration}
+    return extra, "change", {
+        "زخم لحظي": momentum,
+        "تسارع زخم": acceleration,
+        "انفجار لحظي": explosion
+    }
 
 
 def run_screen(filters, columns, sort_col, tickers_dict):
@@ -202,7 +214,7 @@ def main():
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
     
-    tech_cols = ["high", "low", "EMA20", "EMA50", "sector", "VWAP"]
+    tech_cols = ["high", "low", "EMA20", "EMA50", "sector", "VWAP", "price_52_week_high", "price_52_week_low"]
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
     had_error = False
@@ -244,6 +256,13 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
+            # قمة وقاع 52 أسبوع وحساب النسب
+            high52 = float(row.get('price_52_week_high', 0.0) or 0.0)
+            low52 = float(row.get('price_52_week_low', 0.0) or 0.0)
+            
+            dist_high52 = ((price - high52) / high52 * 100) if high52 > 0 else 0.0
+            dist_low52 = ((price - low52) / low52 * 100) if low52 > 0 else 0.0
+
             # إدارة التنبيهات وزيادة العداد
             curr_count = counts.get(ticker, 0) + 1
             counts[ticker] = curr_count
@@ -254,6 +273,9 @@ def main():
             lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
             lines.append(f"🏢 <b>القطاع:</b> {sector}")
             lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
+            if high52 > 0 and low52 > 0:
+                lines.append(f"🏔️ <b>قمة 52 أسسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
+                lines.append(f"⛰️ <b>قاع 52 أسبوع:</b> {low52:.2f} ر.س (+{dist_low52:.1f}%)")
             lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
             lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
             lines.append(f"(أقصى هدف: {lvl['t_max']:.2f} ر.س)")
