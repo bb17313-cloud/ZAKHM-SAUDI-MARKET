@@ -26,6 +26,14 @@ SEEN_FILE = "seen_saudi.json"
 MAX_SHOWN = 10  # الحد الأقصى للأسهم المعروضة في الرسالة الواحدة
 CHECK_INTERVAL_SECONDS = 180  # الفحص كل 3 دقائق (180 ثانية)
 
+# --- إعدادات فلتر VVV (POC + اختراق + VWAP صاعد + انفجار حجم) ---
+VVV_LOOKBACK = 20             # عدد الشموع لتحديد القاعدة/النطاق
+VVV_TIGHT_RANGE_MAX = 0.05    # أقصى اتساع للقاعدة كنسبة من السعر (5%)
+VVV_VWAP_LOOKBACK = 5         # عدد الشموع للخلف للتأكد أن VWAP صاعد
+VVV_REL_VOLUME_MIN = 1.5      # الحد الأدنى لانفجار الحجم مقارنة بمتوسط القاعدة
+VVV_VALUE_AREA_PCT = 0.70     # نسبة الفوليوم لمنطقة القيمة (Value Area)
+VVV_BINS = 24                 # عدد شرائح فوليوم بروفايل
+
 
 def get_saudi_stocks_dict():
     """قائمة الأسهم السعودية (222 سهم)"""
@@ -126,13 +134,23 @@ def screens():
         col("close") > col("EMA10")
     ]
 
+    # فلتر مرشحين أولي لـ VVV (POC + اختراق قاعدة + VWAP صاعد + انفجار حجم)
+    # هذا فقط لتضييق القائمة قبل الفحص التاريخي الأثقل (per-symbol) في check_vvv_setup
+    vvv_candidates = [
+        col("close") > 0,
+        col("change") >= 0.3,
+        col("volume") >= 150000,
+        col("close") > col("VWAP"),
+    ]
+
     extra = ["close", "change", "volume"]
     return extra, "change", {
         "1️⃣ بداية انطلاق (0.5% - 1.5%)": early_momentum,
         "2️⃣ اختراق لحظي وسيولة": intraday_breakout,
         "3️⃣ اختراق و CHOCH أسبوعي": swing_choch,
         "🔄 فلتر الانعكاس (SMA Cross + RSI <= 30)": reversal_signal,
-        "⚡ 5️⃣ زخم 3 دقائق (Pine Script)": momentum_3m
+        "⚡ 5️⃣ زخم 3 دقائق (Pine Script)": momentum_3m,
+        "🎯 VVV Alert (POC + اختراق)": vvv_candidates,
     }
 
 
@@ -156,11 +174,11 @@ def check_3m_pine_signal(ticker):
             return False, None, None
 
         df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
-        
+
         df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
         df['pv'] = df['typical_price'] * df['volume']
         df['vwap'] = df['pv'].cumsum() / df['volume'].cumsum()
-        
+
         df['vol_sma20'] = df['volume'].rolling(window=20).mean()
         df['candle_change'] = ((df['close'] - df['open']) / df['open']) * 100
 
@@ -186,6 +204,117 @@ def check_3m_pine_signal(ticker):
         return False, None, None
 
 
+def calculate_volume_profile(df, num_bins=VVV_BINS, value_area_pct=VVV_VALUE_AREA_PCT):
+    """
+    يحسب Point of Control (POC) ومنطقة القيمة (Value Area) من إطار بيانات OHLCV.
+    نفس منطق poc_filter.py لكن مبني على DataFrame مباشرة (متوافق مع بيانات tvdatafeed).
+    يرجع dict: {"poc": ..., "vah": ..., "val": ...}
+    """
+    lo = float(df['low'].min())
+    hi = float(df['high'].max())
+
+    if hi == lo:
+        total_vol = float(df['volume'].sum())
+        return {"poc": hi, "vah": hi, "val": lo}
+
+    bin_size = (hi - lo) / num_bins
+    bin_edges = [lo + i * bin_size for i in range(num_bins)]
+    bins = {edge: 0.0 for edge in bin_edges}
+
+    typical_prices = (df['high'] + df['low'] + df['close']) / 3
+    for tp, vol in zip(typical_prices, df['volume']):
+        idx = min(int((tp - lo) / bin_size), num_bins - 1)
+        bins[bin_edges[idx]] += float(vol)
+
+    poc_price = max(bins, key=bins.get)
+
+    total_volume = sum(bins.values())
+    target_volume = total_volume * value_area_pct
+    sorted_prices = sorted(bins.keys())
+    poc_idx = sorted_prices.index(poc_price)
+
+    captured = bins[poc_price]
+    lo_idx, hi_idx = poc_idx, poc_idx
+
+    while captured < target_volume and (lo_idx > 0 or hi_idx < len(sorted_prices) - 1):
+        vol_below = bins[sorted_prices[lo_idx - 1]] if lo_idx > 0 else -1
+        vol_above = bins[sorted_prices[hi_idx + 1]] if hi_idx < len(sorted_prices) - 1 else -1
+
+        if vol_above >= vol_below:
+            hi_idx += 1
+            captured += bins[sorted_prices[hi_idx]]
+        else:
+            lo_idx -= 1
+            captured += bins[sorted_prices[lo_idx]]
+
+    vah = sorted_prices[hi_idx] + bin_size
+    val = sorted_prices[lo_idx]
+
+    return {"poc": poc_price, "vah": vah, "val": val}
+
+
+def check_vvv_setup(ticker):
+    """
+    فحص إعداد VVV (فوليوم بروفايل + VWAP + فوليوم بار) على فريم 15 دقيقة:
+      1. قاعدة ضيقة خلال آخر VVV_LOOKBACK شمعة
+      2. اختراق فوق أعلى قمة في القاعدة
+      3. VWAP صاعد والسعر فوقه
+      4. انفجار حجم مقارنة بمتوسط القاعدة
+      5. POC / Value Area من فوليوم بروفايل كمرجع دعم/مقاومة
+
+    يرجع (True, data_dict) عند تحقق الإعداد، أو (False, None) غير ذلك.
+    """
+    if tv is None:
+        return False, None
+
+    try:
+        n_bars = VVV_LOOKBACK + VVV_VWAP_LOOKBACK + 10
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_15_minute, n_bars=n_bars)
+        if df is None or df.empty or len(df) < (VVV_LOOKBACK + VVV_VWAP_LOOKBACK + 1):
+            return False, None
+
+        base_df = df.iloc[-(VVV_LOOKBACK + 1):-1]
+        current = df.iloc[-1]
+
+        base_high = float(base_df['high'].max())
+        base_low = float(base_df['low'].min())
+        price = float(current['close'])
+
+        range_pct = (base_high - base_low) / price if price else 1.0
+        tight_base = range_pct <= VVV_TIGHT_RANGE_MAX
+        breakout = price > base_high
+
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        pv = typical_price * df['volume']
+        vwap_series = pv.cumsum() / df['volume'].cumsum()
+        vwap_now = float(vwap_series.iloc[-1])
+        vwap_prior = float(vwap_series.iloc[-1 - VVV_VWAP_LOOKBACK])
+        vwap_rising = vwap_now > vwap_prior
+        price_above_vwap = price > vwap_now
+
+        avg_volume = float(base_df['volume'].mean())
+        rel_volume = float(current['volume']) / avg_volume if avg_volume else 0.0
+        volume_spike = rel_volume >= VVV_REL_VOLUME_MIN
+
+        is_setup = tight_base and breakout and vwap_rising and price_above_vwap and volume_spike
+        if not is_setup:
+            return False, None
+
+        vp = calculate_volume_profile(df.iloc[-VVV_LOOKBACK:])
+
+        return True, {
+            "poc": vp["poc"],
+            "vah": vp["vah"],
+            "val": vp["val"],
+            "breakout_level": base_high,
+            "rel_volume": rel_volume,
+            "vwap_vvv": vwap_now,
+        }
+    except Exception as e:
+        print(f"خطأ في فحص إعداد VVV للسهم {ticker}: {e}")
+        return False, None
+
+
 def get_historical_power_trend_age(ticker, interval):
     """حساب عدد الشموع المتتالية لـ Power Trend"""
     if tv is None:
@@ -201,8 +330,8 @@ def get_historical_power_trend_age(ticker, interval):
         df['rsi'] = calculate_rsi(df['close'], 14)
 
         df['pt_active'] = (
-            (df['close'] > df['ema20']) & 
-            (df['ema20'] > df['sma50']) & 
+            (df['close'] > df['ema20']) &
+            (df['ema20'] > df['sma50']) &
             (df['rsi'] > 50)
         )
 
@@ -220,7 +349,7 @@ def get_historical_power_trend_age(ticker, interval):
 
 def run_screen(filters, columns, sort_col, tickers_dict):
     symbols = [f"TADAWUL:{t}" for t in tickers_dict.keys()]
-    
+
     query = (
         Query()
         .set_tickers(*symbols)
@@ -229,7 +358,7 @@ def run_screen(filters, columns, sort_col, tickers_dict):
         .order_by(sort_col, ascending=False)
         .limit(300)
     )
-    
+
     try:
         _, df = query.get_scanner_data()
     except Exception as e:
@@ -287,7 +416,7 @@ def send(text):
 
 def calculate_levels(price, high, low, ema20, ema50):
     pivot = (high + low + price) / 3
-    
+
     r1 = (2 * pivot) - low if ((2 * pivot) - low) > price else price * 1.025
     r2 = pivot + (high - low) if (pivot + (high - low)) > r1 else r1 * 1.03
     r3 = high + 2 * (pivot - low) if (high + 2 * (pivot - low)) > r2 else r2 * 1.04
@@ -312,7 +441,7 @@ def calculate_levels(price, high, low, ema20, ema50):
 def main():
     today, counts, last_run_timestamp = load_seen()
     now_timestamp = time.time()
-    
+
     elapsed = now_timestamp - last_run_timestamp
 
     # تحقق مما إذا مرت 3 دقائق (180 ثانية) منذ آخر فحص
@@ -327,7 +456,7 @@ def main():
     stocks_dict = get_saudi_stocks_dict()
 
     tech_cols = [
-        "high", "low", "EMA20", "EMA50", "EMA10", "sector", "VWAP", 
+        "high", "low", "EMA20", "EMA50", "EMA10", "sector", "VWAP",
         "price_52_week_high", "price_52_week_low",
         "high|1W", "high|2W", "RSI", "SMA10", "SMA20", "SMA10|1", "SMA20|1"
     ]
@@ -365,6 +494,19 @@ def main():
                         row_dict['tp_3m'] = tp_3m
                         valid_rows.append(row_dict)
                 df = pd.DataFrame(valid_rows)
+        elif label == "🎯 VVV Alert (POC + اختراق)":
+            if tv is not None:
+                valid_rows = []
+                for _, row in df.iterrows():
+                    ticker_name = str(row.get('clean_name', row['name'])).strip()
+                    is_valid, vvv_data = check_vvv_setup(ticker_name)
+                    if is_valid:
+                        row_dict = row.to_dict()
+                        row_dict.update(vvv_data)
+                        valid_rows.append(row_dict)
+                df = pd.DataFrame(valid_rows)
+            else:
+                df = pd.DataFrame()
 
         if df.empty:
             print(f"[السوق السعودي/{label}] 0 matches")
@@ -377,20 +519,22 @@ def main():
 
         print(f"[السوق السعودي/{label}] {len(results)} matches")
 
-        lines = [f"🚨 <b>تحديث الزخم والأسهم | {label}</b>\n"]
-        
+        is_vvv_screen = label == "🎯 VVV Alert (POC + اختراق)"
+        header_tag = " #vvv_alert" if is_vvv_screen else ""
+        lines = [f"🚨 <b>تحديث الزخم والأسهم | {label}</b>{header_tag}\n"]
+
         for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
             arabic_name = stocks_dict.get(ticker, ticker)
             sector = str(row.get('sector', 'N/A')).strip()
-            
+
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
-            
+
             price = float(row[price_c]) if row[price_c] else 0.0
             change = float(row[chg_c]) if row[chg_c] else 0.0
             volume = float(row[vol_c]) if row[vol_c] else 0.0
             vwap = float(row.get('VWAP', 0.0) or 0.0)
             rsi = float(row.get('RSI', 0.0) or 0.0)
-            
+
             high = float(row['high']) if 'high' in row and row['high'] else price * 1.02
             low = float(row['low']) if 'low' in row and row['low'] else price * 0.98
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
@@ -407,7 +551,7 @@ def main():
 
             high52 = float(row.get('price_52_week_high', 0.0) or 0.0)
             low52 = float(row.get('price_52_week_low', 0.0) or 0.0)
-            
+
             dist_high52 = ((price - high52) / high52 * 100) if high52 > 0 else 0.0
             dist_low52 = ((price - low52) / low52 * 100) if low52 > 0 else 0.0
 
@@ -416,13 +560,16 @@ def main():
 
             lvl = calculate_levels(price, high, low, ema20, ema50)
 
-            lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
+            if is_vvv_screen:
+                lines.append(f"🎯 <b>#vvv_alert – #{idx} {arabic_name} ({ticker})</b>")
+            else:
+                lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
-            
+
             if age_4h > 0:
                 warning_label = " ( ⚠️اتجاه متقدم)" if age_4h > 4 else ""
                 lines.append(f"• Power Trend 4H : شمعة {age_4h}{warning_label}")
-            
+
             if age_15m > 0:
                 lines.append(f"• Power Trend 15M : شمعة {age_15m}")
 
@@ -430,17 +577,21 @@ def main():
                 lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
             if has_weekly_choch:
                 lines.append("⚡️ <b>[CHOCH أسبوعي إيجابي: كسر القمة الأسبوعية]</b>")
-                
+
             lines.append(f"🏢 <b>القطاع:</b> {sector}")
             lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
             if high52 > 0 and low52 > 0:
                 lines.append(f"🏔️ <b>قمة 52 أسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
                 lines.append(f"⛰️ <b>قاع 52 أسبوع:</b> {low52:.2f} ر.س (+{dist_low52:.1f}%)")
             lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
-            
+
             if 'tp_3m' in row and row['tp_3m'] and 'sl_3m' in row and row['sl_3m']:
                 lines.append(f"🎯 <b>هدف 3m (1.5 R:R):</b> {row['tp_3m']:.2f} ر.س | ⛔️ <b>وقف 3m:</b> {row['sl_3m']:.2f} ر.س")
-            
+
+            if 'poc' in row and row.get('poc'):
+                lines.append(f"📍 <b>POC:</b> {row['poc']:.2f} ر.س | <b>Value Area:</b> {row['val']:.2f} - {row['vah']:.2f} ر.س")
+                lines.append(f"💥 <b>مستوى الاختراق:</b> {row['breakout_level']:.2f} ر.س | <b>Rel Vol:</b> {row['rel_volume']:.2f}x")
+
             lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
             lines.append(f"(أقصى هدف: {lvl['t_max']:.2f} ر.س)")
             lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
@@ -451,7 +602,7 @@ def main():
         if len(results) > MAX_SHOWN:
             lines.append(f"+{len(results) - MAX_SHOWN} أخرى\n")
         lines.append("للفرز فقط، تأكد على الشارت قبل أي قرار.")
-        
+
         send("\n".join(lines))
 
     # حفظ وقت الفحص الجديد عند اكتمال العملية
