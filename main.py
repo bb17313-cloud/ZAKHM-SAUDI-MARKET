@@ -401,17 +401,63 @@ def send(text):
     if not TOKEN or not CHAT_ID:
         print("تحذير: BOT_TOKEN أو CHAT_ID غير موجود.")
         return
-    r = requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=20,
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={
+                "chat_id": CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=20,
+        )
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        # لا نوقف كل الفحص بسبب رسالة واحدة فاشلة (طول زائد أو HTML غير صالح)
+        print(f"خطأ تيليجرام (400/غيره): {e} — نص الرسالة (أول 300 حرف): {text[:300]}")
+
+
+def escape_html(value) -> str:
+    """يهرب رموز HTML الخاصة كي لا تكسر parse_mode=HTML في تيليجرام."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
     )
-    r.raise_for_status()
+
+
+def send_chunked(header, blocks, footer=""):
+    """
+    يرسل رسالة طويلة كعدة رسائل تيليجرام منفصلة، كل واحدة أقل من حد تيليجرام (4096 حرف).
+    header: يُضاف في بداية أول رسالة فقط.
+    blocks: قائمة نصوص، كل عنصر = بلوك سهم واحد كامل (وسومه متوازنة داخليًا).
+    footer: يُضاف في نهاية آخر رسالة.
+    """
+    MAX_LEN = 3800  # هامش أمان تحت حد تيليجرام (4096)
+
+    chunks = []
+    current = f"{header}\n\n" if header else ""
+
+    for block in blocks:
+        if current and len(current) + len(block) > MAX_LEN:
+            chunks.append(current)
+            current = ""
+        current += block
+
+    if footer:
+        if current and len(current) + len(footer) > MAX_LEN:
+            chunks.append(current)
+            current = footer
+        else:
+            current += footer
+
+    if current.strip():
+        chunks.append(current)
+
+    for chunk in chunks:
+        send(chunk)
 
 
 def calculate_levels(price, high, low, ema20, ema50):
@@ -521,11 +567,13 @@ def main():
 
         is_vvv_screen = label == "🎯 VVV Alert (POC + اختراق)"
         header_tag = " #vvv_alert" if is_vvv_screen else ""
-        lines = [f"🚨 <b>تحديث الزخم والأسهم | {label}</b>{header_tag}\n"]
+        header = f"🚨 <b>تحديث الزخم والأسهم | {label}</b>{header_tag}"
+        blocks = []
 
         for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
-            arabic_name = stocks_dict.get(ticker, ticker)
-            sector = str(row.get('sector', 'N/A')).strip()
+            lines = []
+            arabic_name = escape_html(stocks_dict.get(ticker, ticker))
+            sector = escape_html(str(row.get('sector', 'N/A')).strip())
 
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
