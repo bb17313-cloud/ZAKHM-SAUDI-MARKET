@@ -4,8 +4,16 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pandas as pd
 import requests
 from tradingview_screener import Query, col
+
+# استيراد TvDatafeed لحساب التاريخي
+try:
+    from tvdatafeed import TvDatafeed, Interval
+    tv = TvDatafeed()
+except ImportError:
+    tv = None
 
 # إعدادات التلغرام من متغيرات البيئة
 TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -46,7 +54,7 @@ def get_saudi_stocks_dict():
         "4292": "عطاء", "6002": "هرفي للأغذية", "6012": "ريدان", "6013": "التطويرية الغذائية",
         "6014": "التمار", "6015": "أمريكانا", "6016": "برغرايززر", "6017": "جاهز", "6018": "الأندية للرياضة",
         "6019": "المسار الشامل", "6022": "أرماح", "4003": "اكسترا", "4008": "ساكو", "4050": "ساسكو",
-        "4051": "باعظيم", "4180": "مجموعة فتيحي", "4190": "جرير", "4191": "أبو معطي", "4192": "السيفغاليري",
+        "4051": "باعظيم", "4180": "مجموعة فتيحي", "4190": "جرير", "4191": "أبو معطي", "4192": "السيف غاليري",
         "4193": "نايس ون", "4194": "محطة البناء", "4200": "الدريس", "4240": "سينومي ريتيل",
         "4001": "أسواق العثيم", "4006": "اسواق المزرعة", "4061": "انعام القابضة", "4160": "ثمار",
         "4161": "بن داود", "4162": "المنجم", "4163": "الدواء", "4164": "النهدي", "2050": "مجموعة صافولا",
@@ -73,22 +81,8 @@ def get_saudi_stocks_dict():
     }
 
 
-def is_market_open():
-    """أوقات عمل السوق السعودي: من 9:45 ص إلى 3:40 م (الأحد - الخميس)"""
-    now = datetime.now(RIYADH)
-    if now.weekday() in [4, 5]:  # الجمعة والسبت
-        return False
-    
-    start_time = now.replace(hour=9, minute=45, second=0, microsecond=0)
-    end_time = now.replace(hour=15, minute=40, second=0, microsecond=0)
-    
-    return start_time <= now <= end_time
-
-
 def screens():
-    """الفلاتر الأساسية بدون تقييد الاستعلامات"""
-    
-    # 1. بداية انطلاق (0.5% - 1.5%)
+    """الفلاتر الأساسية"""
     early_momentum = [
         col("close") > 0,
         col("change") >= 0.5,
@@ -97,7 +91,6 @@ def screens():
         col("close") > col("VWAP")
     ]
 
-    # 2. اختراق لحظي وسيولة
     intraday_breakout = [
         col("close") > 0,
         col("change") >= 0.8,
@@ -107,7 +100,6 @@ def screens():
         col("close") > col("EMA20")
     ]
 
-    # 3. اختراق و CHOCH أسبوعي
     swing_choch = [
         col("close") > 0,
         col("change") >= 1.0,
@@ -116,7 +108,6 @@ def screens():
         col("close") > col("high|1W")
     ]
 
-    # 4. فلتر الانعكاس
     reversal_signal = [
         col("close") > 0,
         col("volume") >= 100000,
@@ -134,16 +125,53 @@ def screens():
     }
 
 
-def calculate_power_trend_candles(row):
-    """حساب عدد شمعات Power Trend بناءً على نسبة التغير لـ 4H و 15M"""
-    chg_240 = float(row.get("change|240", 0.0) or 0.0)
-    chg_15 = float(row.get("change|15", 0.0) or 0.0)
+def calculate_rsi(series, period=14):
+    """حساب مؤشر RSI14"""
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-    # الحسبة: تغير السعر ÷ المعامل المخصص
-    candles_4h = int(chg_240 // 2.0) if chg_240 > 0 else 0
-    candles_15m = int(chg_15 // 0.8) if chg_15 > 0 else 0
 
-    return candles_4h, candles_15m
+def get_historical_power_trend_age(ticker, interval):
+    """
+    جلب بيانات الشموع التاريخية وحساب عدد الشموع المتتالية التي تحققت فيها الشروط الثلاثة:
+    1. Close > EMA20
+    2. EMA20 > SMA50
+    3. RSI14 > 50
+    """
+    if tv is None:
+        return 0
+
+    try:
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=interval, n_bars=100)
+        if df is None or df.empty or len(df) < 50:
+            return 0
+
+        # حساب المؤشرات
+        df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['sma50'] = df['close'].rolling(window=50).mean()
+        df['rsi'] = calculate_rsi(df['close'], 14)
+
+        # تطبيق الشروط الثلاثة معاً
+        df['pt_active'] = (
+            (df['close'] > df['ema20']) & 
+            (df['ema20'] > df['sma50']) & 
+            (df['rsi'] > 50)
+        )
+
+        # العد التنازلي التراكمي للشموع المتتالية من الشمعة الحالية
+        age = 0
+        for is_active in reversed(df['pt_active'].values):
+            if bool(is_active):
+                age += 1
+            else:
+                break
+        return age
+    except Exception as e:
+        print(f"خطأ في جلب تاريخ الشمعات للسهم {ticker}: {e}")
+        return 0
 
 
 def run_screen(filters, columns, sort_col, tickers_dict):
@@ -240,12 +268,11 @@ def main():
     today, counts = load_seen()
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
-    
+
     tech_cols = [
         "high", "low", "EMA20", "EMA50", "sector", "VWAP", 
         "price_52_week_high", "price_52_week_low",
-        "high|1W", "high|2W", "RSI", "SMA10", "SMA20", "SMA10|1", "SMA20|1",
-        "change|240", "change|15"
+        "high|1W", "high|2W", "RSI", "SMA10", "SMA20", "SMA10|1", "SMA20|1"
     ]
 
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
@@ -264,7 +291,6 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
-        # تطبيق الفلترة السعرية الدقيقة
         if label == "1️⃣ بداية انطلاق (0.5% - 1.5%)":
             df = df[df["close"] >= df["high"] * 0.985]
         elif label == "2️⃣ اختراق لحظي وسيولة":
@@ -300,22 +326,21 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
-            # حساب عدد شمعات Power Trend
-            candles_4h, candles_15m = calculate_power_trend_candles(row)
+            # --- حساب عمر الشمعة الفعلي للفريمات التاريخية 4H و 15M ---
+            age_4h = get_historical_power_trend_age(ticker, Interval.in_4_hour) if tv else 0
+            age_15m = get_historical_power_trend_age(ticker, Interval.in_15_minute) if tv else 0
 
             # بيانات أسبوعية واختبار CHOCH
             high_1w = float(row.get('high|1W', 0.0) or 0.0)
             high_2w = float(row.get('high|2W', 0.0) or 0.0)
             has_weekly_choch = (high_1w > 0 and price > high_1w) or (high_2w > 0 and price > high_2w)
 
-            # قمة وقاع 52 أسبوع وحساب النسب
             high52 = float(row.get('price_52_week_high', 0.0) or 0.0)
             low52 = float(row.get('price_52_week_low', 0.0) or 0.0)
             
             dist_high52 = ((price - high52) / high52 * 100) if high52 > 0 else 0.0
             dist_low52 = ((price - low52) / low52 * 100) if low52 > 0 else 0.0
 
-            # إدارة التنبيهات وزيادة العداد
             curr_count = counts.get(ticker, 0) + 1
             counts[ticker] = curr_count
 
@@ -324,12 +349,13 @@ def main():
             lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
             
-            # طباعة نتائج Power Trend بنفس التنسيق المطلوب
-            if candles_4h > 0:
-                warning_label = " ( ⚠️اتجاه متقدم)" if candles_4h > 4 else ""
-                lines.append(f"• Power Trend 4H : شمعة {candles_4h}{warning_label}")
-            if candles_15m > 0:
-                lines.append(f"• Power Trend 15M : شمعة {candles_15m}")
+            # طباعة نتائج Power Trend بالشروط الثلاثة مع عمر الشمعة الحقيقي
+            if age_4h > 0:
+                warning_label = " ( ⚠️اتجاه متقدم)" if age_4h > 4 else ""
+                lines.append(f"• Power Trend 4H : شمعة {age_4h}{warning_label}")
+            
+            if age_15m > 0:
+                lines.append(f"• Power Trend 15M : شمعة {age_15m}")
 
             if rsi > 0:
                 lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
