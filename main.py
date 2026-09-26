@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,7 @@ RIYADH = ZoneInfo("Asia/Riyadh")
 SEEN_FILE = "seen_saudi.json"
 
 MAX_SHOWN = 10  # الحد الأقصى للأسهم المعروضة في الرسالة الواحدة
+CHECK_INTERVAL_SECONDS = 180  # الفحص كل 3 دقائق (180 ثانية)
 
 
 def get_saudi_stocks_dict():
@@ -116,12 +118,21 @@ def screens():
         col("SMA10|1") <= col("SMA20|1")
     ]
 
+    momentum_3m = [
+        col("close") > 0,
+        col("change") >= 0.5,
+        col("volume") >= 100000,
+        col("close") > col("VWAP"),
+        col("close") > col("EMA10")
+    ]
+
     extra = ["close", "change", "volume"]
     return extra, "change", {
         "1️⃣ بداية انطلاق (0.5% - 1.5%)": early_momentum,
         "2️⃣ اختراق لحظي وسيولة": intraday_breakout,
         "3️⃣ اختراق و CHOCH أسبوعي": swing_choch,
-        "🔄 فلتر الانعكاس (SMA Cross + RSI <= 30)": reversal_signal
+        "🔄 فلتر الانعكاس (SMA Cross + RSI <= 30)": reversal_signal,
+        "⚡ 5️⃣ زخم 3 دقائق (Pine Script)": momentum_3m
     }
 
 
@@ -134,13 +145,49 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
+def check_3m_pine_signal(ticker):
+    """فحص شروط Pine Script الخاصة بفلتر زخم 3 دقائق"""
+    if tv is None:
+        return True, None, None
+
+    try:
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_3_minute, n_bars=30)
+        if df is None or df.empty or len(df) < 20:
+            return False, None, None
+
+        df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
+        
+        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+        df['pv'] = df['typical_price'] * df['volume']
+        df['vwap'] = df['pv'].cumsum() / df['volume'].cumsum()
+        
+        df['vol_sma20'] = df['volume'].rolling(window=20).mean()
+        df['candle_change'] = ((df['close'] - df['open']) / df['open']) * 100
+
+        curr = df.iloc[-1]
+        prev1 = df.iloc[-2]
+        prev2 = df.iloc[-3]
+
+        is_gain = curr['candle_change'] >= 1.0
+        is_vol_acc = (curr['volume'] > prev1['volume']) and (prev1['volume'] > prev2['volume'])
+        is_vol_spike = curr['volume'] > (curr['vol_sma20'] * 1.2)
+        is_above_trend = (curr['close'] > curr['ema10']) or (curr['close'] > curr['vwap'])
+
+        buy_signal = is_gain and is_vol_acc and is_vol_spike and is_above_trend
+
+        if buy_signal:
+            stop_loss = float(curr['low'])
+            target_price = float(curr['close'] + ((curr['close'] - curr['low']) * 1.5))
+            return True, stop_loss, target_price
+
+        return False, None, None
+    except Exception as e:
+        print(f"خطأ في فحص فلتر 3 دقائق للسهم {ticker}: {e}")
+        return False, None, None
+
+
 def get_historical_power_trend_age(ticker, interval):
-    """
-    جلب بيانات الشموع التاريخية وحساب عدد الشموع المتتالية التي تحققت فيها الشروط الثلاثة:
-    1. Close > EMA20
-    2. EMA20 > SMA50
-    3. RSI14 > 50
-    """
+    """حساب عدد الشموع المتتالية لـ Power Trend"""
     if tv is None:
         return 0
 
@@ -149,19 +196,16 @@ def get_historical_power_trend_age(ticker, interval):
         if df is None or df.empty or len(df) < 50:
             return 0
 
-        # حساب المؤشرات
         df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['sma50'] = df['close'].rolling(window=50).mean()
         df['rsi'] = calculate_rsi(df['close'], 14)
 
-        # تطبيق الشروط الثلاثة معاً
         df['pt_active'] = (
             (df['close'] > df['ema20']) & 
             (df['ema20'] > df['sma50']) & 
             (df['rsi'] > 50)
         )
 
-        # العد التنازلي التراكمي للشموع المتتالية من الشمعة الحالية
         age = 0
         for is_active in reversed(df['pt_active'].values):
             if bool(is_active):
@@ -200,23 +244,27 @@ def run_screen(filters, columns, sort_col, tickers_dict):
 
 
 def load_seen():
+    """تحميل سجل التنبيهات ووقت آخر فحص"""
     today = datetime.now(RIYADH).strftime("%Y-%m-%d")
     try:
         with open(SEEN_FILE) as f:
             data = json.load(f)
         if data.get("date") == today:
             counts = data.get("counts", {})
-            return today, counts
+            last_run_timestamp = data.get("last_run_timestamp", 0)
+            return today, counts, last_run_timestamp
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    return today, {}
+    return today, {}, 0
 
 
-def save_seen(today, counts):
+def save_seen(today, counts, last_run_timestamp):
+    """حفظ سجل التنبيهات ووقت الفحص الحالي"""
     with open(SEEN_FILE, "w") as f:
         json.dump({
             "date": today,
-            "counts": counts
+            "counts": counts,
+            "last_run_timestamp": last_run_timestamp
         }, f, indent=2)
 
 
@@ -245,13 +293,11 @@ def calculate_levels(price, high, low, ema20, ema50):
     r3 = high + 2 * (pivot - low) if (high + 2 * (pivot - low)) > r2 else r2 * 1.04
 
     support_intraday = min(low, ema20 if 0 < ema20 < price else low)
-    support_ilz = min(ema50 if 0 < ema50 < price else support_intraday * 0.98, pivot)
 
     t1, t2, t3, t4 = r1, r2, r3, r3 * 1.03
     t_max = t4 * 1.05
 
     stop_1 = support_intraday * 0.985
-    stop_2 = support_ilz * 0.975
 
     return {
         "support_intraday": support_intraday,
@@ -260,17 +306,28 @@ def calculate_levels(price, high, low, ema20, ema50):
         "t3": t3,
         "t_max": t_max,
         "stop_1": stop_1,
-        "stop_2": stop_2,
     }
 
 
 def main():
-    today, counts = load_seen()
+    today, counts, last_run_timestamp = load_seen()
+    now_timestamp = time.time()
+    
+    elapsed = now_timestamp - last_run_timestamp
+
+    # تحقق مما إذا مرت 3 دقائق (180 ثانية) منذ آخر فحص
+    if elapsed < CHECK_INTERVAL_SECONDS:
+        remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
+        print(f"⏳ لم تمضِ 3 دقائق بعد منذ آخر فحص. المتبقي: {remaining} ثانية.")
+        return
+
+    print(f"🚀 مرت {int(elapsed)} ثانية - جاري تنفيذ الفحص الشامل لجميع الأسهم والفلاتر...")
+
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
 
     tech_cols = [
-        "high", "low", "EMA20", "EMA50", "sector", "VWAP", 
+        "high", "low", "EMA20", "EMA50", "EMA10", "sector", "VWAP", 
         "price_52_week_high", "price_52_week_low",
         "high|1W", "high|2W", "RSI", "SMA10", "SMA20", "SMA10|1", "SMA20|1"
     ]
@@ -291,13 +348,26 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
+        # تصفيات فرعية خاصة لكل فلتر
         if label == "1️⃣ بداية انطلاق (0.5% - 1.5%)":
             df = df[df["close"] >= df["high"] * 0.985]
         elif label == "2️⃣ اختراق لحظي وسيولة":
             df = df[df["close"] >= df["high"] * 0.99]
+        elif label == "⚡ 5️⃣ زخم 3 دقائق (Pine Script)":
+            if tv is not None:
+                valid_rows = []
+                for _, row in df.iterrows():
+                    ticker_name = str(row.get('clean_name', row['name'])).strip()
+                    is_valid, sl_3m, tp_3m = check_3m_pine_signal(ticker_name)
+                    if is_valid:
+                        row_dict = row.to_dict()
+                        row_dict['sl_3m'] = sl_3m
+                        row_dict['tp_3m'] = tp_3m
+                        valid_rows.append(row_dict)
+                df = pd.DataFrame(valid_rows)
 
         if df.empty:
-            print(f"[السوق السعودي/{label}] 0 matches after fine filter")
+            print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
         results = []
@@ -326,11 +396,11 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
-            # --- حساب عمر الشمعة الفعلي للفريمات التاريخية 4H و 15M ---
+            # حساب عمر الشمعة للفريمات التاريخية
             age_4h = get_historical_power_trend_age(ticker, Interval.in_4_hour) if tv else 0
             age_15m = get_historical_power_trend_age(ticker, Interval.in_15_minute) if tv else 0
 
-            # بيانات أسبوعية واختبار CHOCH
+            # CHOCH أسبوعي
             high_1w = float(row.get('high|1W', 0.0) or 0.0)
             high_2w = float(row.get('high|2W', 0.0) or 0.0)
             has_weekly_choch = (high_1w > 0 and price > high_1w) or (high_2w > 0 and price > high_2w)
@@ -349,7 +419,6 @@ def main():
             lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
             
-            # طباعة نتائج Power Trend بالشروط الثلاثة مع عمر الشمعة الحقيقي
             if age_4h > 0:
                 warning_label = " ( ⚠️اتجاه متقدم)" if age_4h > 4 else ""
                 lines.append(f"• Power Trend 4H : شمعة {age_4h}{warning_label}")
@@ -368,6 +437,10 @@ def main():
                 lines.append(f"🏔️ <b>قمة 52 أسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
                 lines.append(f"⛰️ <b>قاع 52 أسبوع:</b> {low52:.2f} ر.س (+{dist_low52:.1f}%)")
             lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
+            
+            if 'tp_3m' in row and row['tp_3m'] and 'sl_3m' in row and row['sl_3m']:
+                lines.append(f"🎯 <b>هدف 3m (1.5 R:R):</b> {row['tp_3m']:.2f} ر.س | ⛔️ <b>وقف 3m:</b> {row['sl_3m']:.2f} ر.س")
+            
             lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
             lines.append(f"(أقصى هدف: {lvl['t_max']:.2f} ر.س)")
             lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
@@ -381,7 +454,8 @@ def main():
         
         send("\n".join(lines))
 
-    save_seen(today, counts)
+    # حفظ وقت الفحص الجديد عند اكتمال العملية
+    save_seen(today, counts, now_timestamp)
     if had_error:
         sys.exit(1)
 
