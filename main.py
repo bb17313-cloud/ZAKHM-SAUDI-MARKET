@@ -7,13 +7,14 @@ from zoneinfo import ZoneInfo
 import requests
 from tradingview_screener import Query, col
 
+# إعدادات التلغرام من متغيرات البيئة
 TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 
 RIYADH = ZoneInfo("Asia/Riyadh")
 SEEN_FILE = "seen_saudi.json"
 
-MAX_SHOWN = 10
+MAX_SHOWN = 10  # الحد الأقصى للأسهم المعروضة في الرسالة الواحدة
 
 
 def get_saudi_stocks_dict():
@@ -85,33 +86,44 @@ def is_market_open():
 
 
 def screens():
-    """الشروط اللحظية، التسارع، والانفجار اللحظي"""
-    momentum = [
+    """شروط مخصصة للسوق السعودي (10% تذبذب) للفرز الدقيق"""
+    
+    # 1. بداية انطلاق (0.5% - 1.5%)
+    early_momentum = [
         col("close") > 0,
-        col("change") >= 0.5,
-        col("volume") >= 20000,
-        col("close") > col("VWAP")
+        col("change") >= 0.5,                 # انطلاق مبكر
+        col("change") <= 1.5,                 # مجال ربح متبقي واسع
+        col("volume") >= 150000,              # سيولة 150k+
+        col("close") > col("VWAP"),           # فوق متوسط السعر اللحظي
+        col("close") >= col("high") * 0.985   # التداول عند/قرب أعلى سعر لليوم
     ]
 
-    acceleration = [
+    # 2. اختراق لحظي وسيولة
+    intraday_breakout = [
         col("close") > 0,
-        col("change") >= 0.5,
-        col("volume") >= 30000
+        col("change") >= 0.8,
+        col("change") <= 3.0,
+        col("volume") >= 200000,              # سيولة 200k+
+        col("close") > col("VWAP"),
+        col("close") > col("EMA20"),
+        col("close") >= col("high") * 0.99,   # اختراق قمة اليوم اللحظية
+        col("volume|1") >= col("SMA10|1") * 3 # دخول سيولة 3 أضعاف متوسط الدقيقة
     ]
 
-    explosion = [
+    # 3. اختراق و CHOCH أسبوعي (Weekly Swing + CHOCH)
+    swing_choch = [
         col("close") > 0,
-        col("change") >= 0.5,
-        col("volume") >= 40000,
-        (col("change|1") >= 1.0) | (col("change|5") >= 1.0),
-        col("volume|1") >= col("SMA10|1") * 3
+        col("change") >= 1.0,
+        col("volume") >= 200000,
+        col("close") > col("EMA20"),
+        col("close") > col("high|1W")          # كسر قمة الأسبوع الماضي (Bullish CHOCH)
     ]
 
     extra = ["close", "change", "volume"]
     return extra, "change", {
-        "زخم لحظي": momentum,
-        "تسارع زخم": acceleration,
-        "انفجار لحظي": explosion
+        "1️⃣ بداية انطلاق (0.5% - 1.5%)": early_momentum,
+        "2️⃣ اختراق لحظي وسيولة": intraday_breakout,
+        "3️⃣ اختراق و CHOCH أسبوعي": swing_choch
     }
 
 
@@ -214,7 +226,11 @@ def main():
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
     
-    tech_cols = ["high", "low", "EMA20", "EMA50", "sector", "VWAP", "price_52_week_high", "price_52_week_low"]
+    tech_cols = [
+        "high", "low", "EMA20", "EMA50", "sector", "VWAP", 
+        "price_52_week_high", "price_52_week_low",
+        "high|1W", "high|2W"
+    ]
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
     had_error = False
@@ -256,6 +272,13 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
+            # بيانات أسبوعية واختبار CHOCH
+            high_1w = float(row.get('high|1W', 0.0) or 0.0)
+            high_2w = float(row.get('high|2W', 0.0) or 0.0)
+            
+            # تحقق من شارة CHOCH الأسبوعية
+            has_weekly_choch = (high_1w > 0 and price > high_1w) or (high_2w > 0 and price > high_2w)
+
             # قمة وقاع 52 أسبوع وحساب النسب
             high52 = float(row.get('price_52_week_high', 0.0) or 0.0)
             low52 = float(row.get('price_52_week_low', 0.0) or 0.0)
@@ -271,10 +294,14 @@ def main():
 
             lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
+            
+            if has_weekly_choch:
+                lines.append("⚡️ <b>[CHOCH أسبوعي إيجابي: كسر القمة الأسبوعية]</b>")
+                
             lines.append(f"🏢 <b>القطاع:</b> {sector}")
             lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
             if high52 > 0 and low52 > 0:
-                lines.append(f"🏔️ <b>قمة 52 أسسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
+                lines.append(f"🏔️ <b>قمة 52 أسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
                 lines.append(f"⛰️ <b>قاع 52 أسبوع:</b> {low52:.2f} ر.س (+{dist_low52:.1f}%)")
             lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
             lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
