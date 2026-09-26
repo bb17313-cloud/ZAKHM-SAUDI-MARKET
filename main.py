@@ -46,7 +46,7 @@ def get_saudi_stocks_dict():
         "4292": "عطاء", "6002": "هرفي للأغذية", "6012": "ريدان", "6013": "التطويرية الغذائية",
         "6014": "التمار", "6015": "أمريكانا", "6016": "برغرايززر", "6017": "جاهز", "6018": "الأندية للرياضة",
         "6019": "المسار الشامل", "6022": "أرماح", "4003": "اكسترا", "4008": "ساكو", "4050": "ساسكو",
-        "4051": "باعظيم", "4180": "مجموعة فتيحي", "4190": "جرير", "4191": "أبو معطي", "4192": "السيف غاليري",
+        "4051": "باعظيم", "4180": "مجموعة فتيحي", "4190": "جرير", "4191": "أبو معطي", "4192": "السيفغاليري",
         "4193": "نايس ون", "4194": "محطة البناء", "4200": "الدريس", "4240": "سينومي ريتيل",
         "4001": "أسواق العثيم", "4006": "اسواق المزرعة", "4061": "انعام القابضة", "4160": "ثمار",
         "4161": "بن داود", "4162": "المنجم", "4163": "الدواء", "4164": "النهدي", "2050": "مجموعة صافولا",
@@ -73,8 +73,20 @@ def get_saudi_stocks_dict():
     }
 
 
+def is_market_open():
+    """أوقات عمل السوق السعودي: من 9:45 ص إلى 3:40 م (الأحد - الخميس)"""
+    now = datetime.now(RIYADH)
+    if now.weekday() in [4, 5]:  # الجمعة والسبت
+        return False
+    
+    start_time = now.replace(hour=9, minute=45, second=0, microsecond=0)
+    end_time = now.replace(hour=15, minute=40, second=0, microsecond=0)
+    
+    return start_time <= now <= end_time
+
+
 def screens():
-    """الفلاتر الأصلية بدون تقييد استعلامات البحث"""
+    """الفلاتر الأساسية بدون تقييد الاستعلامات"""
     
     # 1. بداية انطلاق (0.5% - 1.5%)
     early_momentum = [
@@ -122,20 +134,16 @@ def screens():
     }
 
 
-def get_power_trend_age(row, tf, max_bars=10):
-    """حساب عدد الشموع المتتالية لاستمرار الـ Power Trend (شمعة خضراء وأعلى من EMA20)"""
-    count = 0
-    for i in range(max_bars):
-        suffix = f"|{tf}" if i == 0 else f"|{tf}|{i}"
-        c = float(row.get(f"close{suffix}", 0) or 0)
-        o = float(row.get(f"open{suffix}", 0) or 0)
-        ema = float(row.get(f"EMA20{suffix}", 0) or 0)
-        
-        if c > 0 and c > o and c > ema:
-            count += 1
-        else:
-            break
-    return count
+def calculate_power_trend_candles(row):
+    """حساب عدد شمعات Power Trend بناءً على نسبة التغير لـ 4H و 15M"""
+    chg_240 = float(row.get("change|240", 0.0) or 0.0)
+    chg_15 = float(row.get("change|15", 0.0) or 0.0)
+
+    # الحسبة: تغير السعر ÷ المعامل المخصص
+    candles_4h = int(chg_240 // 2.0) if chg_240 > 0 else 0
+    candles_15m = int(chg_15 // 0.8) if chg_15 > 0 else 0
+
+    return candles_4h, candles_15m
 
 
 def run_screen(filters, columns, sort_col, tickers_dict):
@@ -233,18 +241,12 @@ def main():
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
     
-    # تحضير أعمدة الفريمات الزمنية لحساب عمر الشمعة (10 شموع سابقة لكل فريم)
-    tf_cols = []
-    for tf in ["240", "15"]:
-        for i in range(10):
-            suffix = f"|{tf}" if i == 0 else f"|{tf}|{i}"
-            tf_cols.extend([f"close{suffix}", f"open{suffix}", f"EMA20{suffix}"])
-
     tech_cols = [
         "high", "low", "EMA20", "EMA50", "sector", "VWAP", 
         "price_52_week_high", "price_52_week_low",
-        "high|1W", "high|2W", "RSI", "SMA10", "SMA20", "SMA10|1", "SMA20|1"
-    ] + tf_cols
+        "high|1W", "high|2W", "RSI", "SMA10", "SMA20", "SMA10|1", "SMA20|1",
+        "change|240", "change|15"
+    ]
 
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
@@ -298,9 +300,8 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
-            # حساب عمر شمعة Power Trend لفريم 4H وفريم 15M
-            age_4h = get_power_trend_age(row, "240")
-            age_15m = get_power_trend_age(row, "15")
+            # حساب عدد شمعات Power Trend
+            candles_4h, candles_15m = calculate_power_trend_candles(row)
 
             # بيانات أسبوعية واختبار CHOCH
             high_1w = float(row.get('high|1W', 0.0) or 0.0)
@@ -323,11 +324,12 @@ def main():
             lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
             
-            # عرض عمر شمعة Power Trend بالتنسيق المطلوب بالظبط
-            if age_4h > 0:
-                lines.append(f"⚡️ <b>شمعة {age_4h} : Power Trend 4H</b>")
-            if age_15m > 0:
-                lines.append(f"⚡️ <b>شمعة {age_15m} : Power Trend 15M</b>")
+            # طباعة نتائج Power Trend بنفس التنسيق المطلوب
+            if candles_4h > 0:
+                warning_label = " ( ⚠️اتجاه متقدم)" if candles_4h > 4 else ""
+                lines.append(f"• Power Trend 4H : شمعة {candles_4h}{warning_label}")
+            if candles_15m > 0:
+                lines.append(f"• Power Trend 15M : شمعة {candles_15m}")
 
             if rsi > 0:
                 lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
