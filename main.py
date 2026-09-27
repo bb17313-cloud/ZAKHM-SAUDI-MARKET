@@ -36,8 +36,13 @@ VVV_BINS = 24                 # عدد شرائح فوليوم بروفايل
 
 
 def get_saudi_stocks_dict():
-    """قائمة الأسهم السعودية (222 سهم)"""
+    """قائمة الأسهم السعودية المحدثة"""
     return {
+        # الأسهم المضافة
+        "4150": "التعمير",
+        "9523": "لدن",
+        
+        # القائمة الأساسية
         "2030": "المصافي", "2222": "أرامكو السعودية", "2380": "بترو رابغ", "2381": "الحفر العربية",
         "2382": "اديس", "4030": "البحري", "1201": "تكوين", "1202": "ميكو", "1210": "بي سي آي",
         "1211": "معادن", "1301": "أسلاك", "1304": "اليمامة للحديد", "1320": "أنابيب السعودية",
@@ -92,24 +97,28 @@ def get_saudi_stocks_dict():
 
 
 def screens():
-    """الفلاتر الأساسية"""
+    """الفلاتر الأساسية المحسّنة بطريقة عملية"""
+    
+    # 1. بداية انطلاق: تم توسيع السقف من 1.5% إلى 2.5%
     early_momentum = [
         col("close") > 0,
         col("change") >= 0.5,
-        col("change") <= 1.5,
+        col("change") <= 2.5,
         col("volume") >= 150000,
         col("close") > col("VWAP")
     ]
 
+    # 2. اختراق لحظي وسيولة: تم توسيع السقف إلى 6.0% لاقتناص الأسهم الأكثر ارتفاعاً
     intraday_breakout = [
         col("close") > 0,
-        col("change") >= 0.8,
-        col("change") <= 3.0,
+        col("change") >= 1.0,
+        col("change") <= 6.0,
         col("volume") >= 200000,
         col("close") > col("VWAP"),
         col("close") > col("EMA20")
     ]
 
+    # 3. اختراق أسبوعي
     swing_choch = [
         col("close") > 0,
         col("change") >= 1.0,
@@ -118,14 +127,16 @@ def screens():
         col("close") > col("high|1W")
     ]
 
+    # 4. فلتر الانعكاس: تم رفع RSI إلى 35
     reversal_signal = [
         col("close") > 0,
         col("volume") >= 100000,
-        col("RSI") <= 30,
+        col("RSI") <= 35,
         col("SMA10") > col("SMA20"),
         col("SMA10|1") <= col("SMA20|1")
     ]
 
+    # 5. زخم 3 دقائق
     momentum_3m = [
         col("close") > 0,
         col("change") >= 0.5,
@@ -134,6 +145,7 @@ def screens():
         col("close") > col("EMA10")
     ]
 
+    # 6. فلتر VVV
     vvv_candidates = [
         col("close") > 0,
         col("change") >= 0.3,
@@ -143,10 +155,10 @@ def screens():
 
     extra = ["close", "change", "volume"]
     return extra, "change", {
-        "1️⃣ بداية انطلاق (0.5% - 1.5%)": early_momentum,
-        "2️⃣ اختراق لحظي وسيولة": intraday_breakout,
+        "1️⃣ بداية انطلاق (0.5% - 2.5%)": early_momentum,
+        "2️⃣ اختراق لحظي وسيولة (1.0% - 6.0%)": intraday_breakout,
         "3️⃣ اختراق و CHOCH أسبوعي": swing_choch,
-        "🔄 فلتر الانعكاس (SMA Cross + RSI <= 30)": reversal_signal,
+        "🔄 فلتر الانعكاس (SMA Cross + RSI <= 35)": reversal_signal,
         "⚡ 5️⃣ زخم 3 دقائق (Pine Script)": momentum_3m,
         "🎯 VVV Alert (POC + اختراق)": vvv_candidates,
     }
@@ -184,9 +196,9 @@ def check_3m_pine_signal(ticker):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
 
-        is_gain = curr['candle_change'] >= 1.0
+        is_gain = curr['candle_change'] >= 0.8
         is_vol_acc = (curr['volume'] > prev1['volume']) and (prev1['volume'] > prev2['volume'])
-        is_vol_spike = curr['volume'] > (curr['vol_sma20'] * 1.2)
+        is_vol_spike = curr['volume'] > (curr['vol_sma20'] * 1.1)
         is_above_trend = (curr['close'] > curr['ema10']) or (curr['close'] > curr['vwap'])
 
         buy_signal = is_gain and is_vol_acc and is_vol_spike and is_above_trend
@@ -500,10 +512,11 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
-        if label == "1️⃣ بداية انطلاق (0.5% - 1.5%)":
-            df = df[df["close"] >= df["high"] * 0.985]
-        elif label == "2️⃣ اختراق لحظي وسيولة":
-            df = df[df["close"] >= df["high"] * 0.99]
+        # تطبيق فلترة الحفاظ على القمة بطريقة مرنة وعملية (ضمن 2% من قمة اليوم)
+        if "بداية انطلاق" in label:
+            df = df[df["close"] >= df["high"] * 0.98]
+        elif "اختراق لحظي" in label:
+            df = df[df["close"] >= df["high"] * 0.98]
         elif label == "⚡ 5️⃣ زخم 3 دقائق (Pine Script)":
             if tv is not None:
                 valid_rows = []
