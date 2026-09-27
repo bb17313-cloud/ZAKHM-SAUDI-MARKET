@@ -38,14 +38,10 @@ VVV_BINS = 24                 # عدد شرائح فوليوم بروفايل
 def get_saudi_stocks_dict():
     """قائمة الأسهم السعودية المحدثة"""
     return {
-        # الأسهم المضافة حديثاً
-        "4150": "التعمير",
-        "9523": "لدن",
-        
-        # القائمة الأساسية
-        "2030": "المصافي", "2222": "أرامكو السعودية", "2380": "بترو رابغ", "2381": "الحفر العربية",
-        "2382": "اديس", "4030": "البحري", "1201": "تكوين", "1202": "ميكو", "1210": "بي سي آي",
-        "1211": "معادن", "1301": "أسلاك", "1304": "اليمامة للحديد", "1320": "أنابيب السعودية",
+        "4150": "التعمير", "9523": "لدن", "2030": "المصافي", "2222": "أرامكو السعودية", 
+        "2380": "بترو رابغ", "2381": "الحفر العربية", "2382": "اديس", "4030": "البحري", 
+        "1201": "تكوين", "1202": "ميكو", "1210": "بي سي آي", "1211": "معادن", 
+        "1301": "أسلاك", "1304": "اليمامة للحديد", "1320": "أنابيب السعودية", 
         "1321": "أنابيب الشرق", "1322": "أماك", "1323": "يو سي آي سي", "1324": "صالح الراشد",
         "2001": "كيمانول", "2010": "سابك", "2020": "سابك للمغذيات الزراعية", "2060": "التصنيع",
         "2090": "جيسكو", "2150": "زجاج", "2170": "اللجين", "2180": "فيبكو", "2200": "أنابيب",
@@ -59,40 +55,22 @@ def get_saudi_stocks_dict():
         "1212": "استرا الصناعية", "1214": "شاكر", "1302": "يوان", "1303": "الصناعات الكهربائية",
         "2040": "الخزف السعودي", "2110": "الكابلات السعودية", "2160": "اميانتيت", "2320": "البابطين",
         "2370": "مسك", "4110": "باتك", "4140": "صادرات", "4141": "العمران", "4142": "كابلات الرياض",
-        "4144": "رووم", "4145": "او جي سي", "4146": "جاز", "4147": "سي جي اس", "4148": "الوسائل الصناعية",
         "1831": "مهارة", "1832": "صدر", "1833": "الموارد", "1834": "سماسكو", "1835": "تمكين",
         "4270": "طباعة وتغليف", "6004": "كاتريون", "2190": "سيسكو القابضة", "4031": "الأرضية",
         "4040": "سابتكو", "4260": "بدجت السعودية", "4261": "ذيب", "4262": "لومي", "4263": "سال",
-        "4264": "طيران ناس", "4265": "شري", "1213": "نسيج", "2130": "صدق", "2340": "ارتيكس",
-        "4011": "لازوردي", "4012": "الأاصيل", "1810": "سيرا", "1820": "بان", "1830": "لحام للرياضة",
-        "4090": "طيبة", "4170": "شمس", "4250": "جيل عمر", "4290": "الخليج للتدريب", "4291": "الوطنية للتعليم",
-        "4292": "عطاء", "6002": "هرفي للأغذية", "6012": "ريدان", "6013": "التطويرية الغذائية",
-        "6014": "التمار", "6015": "أمريكانا", "6016": "برغرايززر", "6017": "جاهز", "6018": "الأندية للرياضة",
-        "6019": "المسار الشامل", "6022": "أرماح", "4003": "اكسترا", "4008": "ساكو", "4050": "ساسكو",
-        "4051": "باعظيم", "4180": "مجموعة فتيحي", "4190": "جرير", "4191": "أبو معطي", "4192": "السيف غاليري",
-        "4193": "نايس ون", "4194": "محطة البناء", "4200": "الدريس", "4240": "سينومي ريتيل",
-        "4001": "أسواق العثيم", "4006": "اسواق المزرعة", "4061": "انعام القابضة", "4160": "ثمار",
+        "1810": "سيرا", "4090": "طيبة", "4170": "شمس", "4250": "جبل عمر", "4290": "الخليج للتدريب",
+        "4291": "الوطنية للتعليم", "4292": "عطاء", "6002": "هرفي للأغذية", "6013": "التطويرية الغذائية",
+        "6015": "أمريكانا", "6017": "جاهز", "4003": "اكسترا", "4008": "ساكو", "4050": "ساسكو",
+        "4190": "جرير", "4192": "السيف غاليري", "4200": "الدريس", "4001": "أسواق العثيم",
         "4161": "بن داود", "4162": "المنجم", "4163": "الدواء", "4164": "النهدي", "2050": "مجموعة صافولا",
-        "2100": "وفرة", "2140": "ايان", "2270": "سدافكو", "2280": "المراعي", "2281": "تنمية",
-        "2282": "نقى", "2283": "المطاحن الأولى", "2284": "المطاحن الحديثة", "2285": "المطاحن العربية",
-        "2286": "المطاحن الرابعة", "2287": "انتاج", "2288": "نفوذ", "4080": "سناد القابضة",
-        "6001": "حلواني اخوان", "6010": "نادك", "6020": "جلكو", "6040": "تبوك الزراعية", "6050": "الأسماك",
-        "6060": "الشرقية سمنة", "6070": "الجوف", "6090": "جازادكو", "4165": "الماجد للعود", "2230": "الكيميائية",
-        "4002": "المواساة", "4004": "دله الصحية", "4005": "رعاية", "4007": "الحمادي", "4009": "السعودي الألماني الصحية",
-        "4013": "سليمان الحبيب", "4014": "دار المعدات", "4017": "فقيه الطبية", "4018": "الموسى",
-        "4019": "اس ام علي للرعاية الصحية", "4021": "المركز الكندي الطبي", "2070": "الدوائية",
-        "4015": "جمجوم فارما", "4016": "أفالون فارما", "1010": "الرياض", "1020": "الجزيرة", "1030": "الاستثمار",
+        "2270": "سدافكو", "2280": "المراعي", "2281": "تنمية", "2283": "المطاحن الأولى", "2284": "المطاحن الحديثة",
+        "6010": "نادك", "6070": "الجوف", "4002": "المواساة", "4004": "دله الصحية", "4005": "رعاية",
+        "4007": "الحمادي", "4009": "السعودي الألماني الصحية", "4013": "سليمان الحبيب", "4017": "فقيه الطبية",
+        "2070": "الدوائية", "4015": "جمجوم فارما", "1010": "الرياض", "1020": "الجزيرة", "1030": "الاستثمار",
         "1050": "بي اس اف", "1060": "الأول", "1080": "العربي", "1120": "الراجحي", "1140": "البلاد",
-        "1150": "الإنماء", "1180": "الأهلي", "1111": "مجموعة تداول", "1182": "أملاك", "1183": "سهل",
-        "2120": "متطورة", "4081": "النايفات", "4082": "مرنة", "4083": "تسهيل", "4084": "دراية",
-        "4130": "درب السعودية", "4280": "المملكة", "7200": "ام أي اس", "7201": "بحر العرب", "7202": "سلوشنز",
-        "7203": "علم", "7204": "تويي", "7205": "دي بي اس", "7211": "عزم", "7010": "اس تي سي",
-        "7020": "اتحاد اتصالات", "7030": "زين السعودية", "7040": "قو للاتصالات", "2080": "الغاز القابضة",
-        "2081": "الخريف", "2082": "أكوا", "2083": "مرافق", "2084": "مباهنا", "5110": "السعودية للطاقة",
-        "4330": "الرياض ريت", "4331": "الجزيرة ريت", "4332": "جدوى ريت الحرمين", "4333": "تعليم ريت",
-        "4334": "المعذر ريت", "4335": "مشاركة ريت", "4337": "العزيزية ريت", "4338": "الأهلي ريت 1",
-        "4339": "دراية ريت", "4340": "الراجحي ريت", "4342": "جدوى ريت السعودية", "4344": "سدكو كابيتال ريت",
-        "4345": "الإنماء ريت للتجزئة"
+        "1150": "الإنماء", "1180": "الأهلي", "1111": "مجموعة تداول", "7200": "ام أي اس", "7202": "سلوشنز",
+        "7203": "علم", "7010": "اس تي سي", "7020": "اتحاد اتصالات", "7030": "زين السعودية", "2082": "أكوا",
+        "2083": "مرافق", "5110": "السعودية للطاقة"
     }
 
 
@@ -153,11 +131,10 @@ def screens():
         col("close") > col("VWAP"),
     ]
 
-    # 7. فلتر الارتداد القوي من القاع اللحظي (V-Shape Reversal)
-    v_bottom_bounce = [
+    # 7. فلتر الارتداد المبكر مع تسارع الفوليوم (فاصل 15 دقيقة)
+    v_bottom_bounce_15m = [
         col("close") > 0,
-        col("volume") >= 100000,
-        col("close") > col("VWAP"),
+        col("volume") >= 50000,
     ]
 
     extra = ["close", "change", "volume"]
@@ -168,7 +145,7 @@ def screens():
         "🔄 فلتر الانعكاس (SMA Cross + RSI <= 35)": reversal_signal,
         "⚡ 5️⃣ زخم 3 دقائق (Pine Script)": momentum_3m,
         "🎯 VVV Alert (POC + اختراق)": vvv_candidates,
-        "🔄 7️⃣ ارتداد قوي من القاع (V-Reversal 2%)": v_bottom_bounce,
+        "🔄 7️⃣ ارتداد الفوليوم المبكر (فاصل 15 دقيقة)": v_bottom_bounce_15m,
     }
 
 
@@ -179,6 +156,51 @@ def calculate_rsi(series, period=14):
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
+
+
+def check_15m_bounce_signal(ticker):
+    """فحص الارتداد المبكر وتصاعد الفوليوم على فاصل 15 دقيقة"""
+    if tv is None:
+        return True, None
+
+    try:
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_15_minute, n_bars=25)
+        if df is None or df.empty or len(df) < 15:
+            return False, None
+
+        df['vol_sma10'] = df['volume'].rolling(window=10).mean()
+
+        curr = df.iloc[-1]
+        prev1 = df.iloc[-2]
+        prev2 = df.iloc[-3]
+
+        # أدنى سعر خلال آخر 4 شموع (ساعة كاملة)
+        local_low = float(df['low'].iloc[-4:].min())
+        curr_price = float(curr['close'])
+
+        # 1. نسبة الارتداد من أدنى سعر القاع اللحظي (0.8% فما فوق)
+        bounce_pct = ((curr_price - local_low) / local_low) * 100
+        has_bounce = bounce_pct >= 0.8
+
+        # 2. شرط الفوليوم: الشمعة الحالية أكبر من متوسط 10 شموع بـ 1.25 ضعف أو تصاعد متتالي للسيولة
+        vol_sma = float(curr['vol_sma10']) if curr['vol_sma10'] else 1.0
+        vol_spike = float(curr['volume']) >= (vol_sma * 1.25)
+        vol_ascending = (float(curr['volume']) > float(prev1['volume'])) and (float(prev1['volume']) > float(prev2['volume']))
+
+        # 3. إغلاق الشمعة أخضر أو قريب جداً من الأعلى
+        is_green_candle = curr_price > float(curr['open']) or curr_price >= float(curr['high']) * 0.998
+
+        if has_bounce and (vol_spike or vol_ascending) and is_green_candle:
+            return True, {
+                "bounce_pct": bounce_pct,
+                "vol_15m": int(curr['volume']),
+                "vol_ratio": float(curr['volume']) / vol_sma if vol_sma else 1.0
+            }
+
+        return False, None
+    except Exception as e:
+        print(f"خطأ في فحص ارتداد 15 دقيقة للسهم {ticker}: {e}")
+        return False, None
 
 
 def check_3m_pine_signal(ticker):
@@ -192,11 +214,9 @@ def check_3m_pine_signal(ticker):
             return False, None, None
 
         df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
-
         df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
         df['pv'] = df['typical_price'] * df['volume']
         df['vwap'] = df['pv'].cumsum() / df['volume'].cumsum()
-
         df['vol_sma20'] = df['volume'].rolling(window=20).mean()
         df['candle_change'] = ((df['close'] - df['open']) / df['open']) * 100
 
@@ -240,7 +260,6 @@ def calculate_volume_profile(df, num_bins=VVV_BINS, value_area_pct=VVV_VALUE_ARE
         bins[bin_edges[idx]] += float(vol)
 
     poc_price = max(bins, key=bins.get)
-
     total_volume = sum(bins.values())
     target_volume = total_volume * value_area_pct
     sorted_prices = sorted(bins.keys())
@@ -418,7 +437,7 @@ def send(text):
         )
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:
-        print(f"خطأ تيليجرام: {e} — نص الرسالة (أول 300 حرف): {text[:300]}")
+        print(f"خطأ تيليجرام: {e} — نص الرسالة: {text[:300]}")
 
 
 def escape_html(value) -> str:
@@ -467,9 +486,8 @@ def calculate_levels(price, high, low, ema20, ema50):
 
     support_intraday = min(low, ema20 if 0 < ema20 < price else low)
 
-    t1, t2, t3, t4 = r1, r2, r3, r3 * 1.03
-    t_max = t4 * 1.05
-
+    t1, t2, t3 = r1, r2, r3
+    t_max = r3 * 1.05
     stop_1 = support_intraday * 0.985
 
     return {
@@ -520,14 +538,23 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
-        # تطبيق التصفية الخاصة بكل فلتر عبر Pandas
+        # تطبيق التصفية الخاصة بكل فلتر
         if "بداية انطلاق" in label:
             df = df[df["close"] >= df["high"] * 0.98]
         elif "اختراق لحظي" in label:
             df = df[df["close"] >= df["high"] * 0.98]
-        elif "ارتداد قوي من القاع" in label:
-            # صعود بنسبة 2% من القاع + التداول قرب أعلى سعر حققه الارتداد
-            df = df[(df["close"] >= df["low"] * 1.02) & (df["close"] >= df["high"] * 0.985)]
+        elif "15 دقيقة" in label:
+            # التصفية الجديدة لفاصل 15 دقيقة مع تسارع الفوليوم
+            if tv is not None:
+                valid_rows = []
+                for _, row in df.iterrows():
+                    ticker_name = str(row.get('clean_name', row['name'])).strip()
+                    is_valid, bounce_info = check_15m_bounce_signal(ticker_name)
+                    if is_valid:
+                        row_dict = row.to_dict()
+                        row_dict.update(bounce_info)
+                        valid_rows.append(row_dict)
+                df = pd.DataFrame(valid_rows)
         elif label == "⚡ 5️⃣ زخم 3 دقائق (Pine Script)":
             if tv is not None:
                 valid_rows = []
@@ -588,58 +615,26 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
-            age_4h = get_historical_power_trend_age(ticker, Interval.in_4_hour) if tv else 0
-            age_15m = get_historical_power_trend_age(ticker, Interval.in_15_minute) if tv else 0
-
-            high_1w = float(row.get('high|1W', 0.0) or 0.0)
-            high_2w = float(row.get('high|2W', 0.0) or 0.0)
-            has_weekly_choch = (high_1w > 0 and price > high_1w) or (high_2w > 0 and price > high_2w)
-
-            high52 = float(row.get('price_52_week_high', 0.0) or 0.0)
-            low52 = float(row.get('price_52_week_low', 0.0) or 0.0)
-
-            dist_high52 = ((price - high52) / high52 * 100) if high52 > 0 else 0.0
-            dist_low52 = ((price - low52) / low52 * 100) if low52 > 0 else 0.0
-
             curr_count = counts.get(ticker, 0) + 1
             counts[ticker] = curr_count
 
             lvl = calculate_levels(price, high, low, ema20, ema50)
 
-            if is_vvv_screen:
-                stock_lines.append(f"🎯 <b>#vvv_alert – #{idx} {arabic_name} ({ticker})</b>")
-            else:
-                stock_lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
+            stock_lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             stock_lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
 
-            if age_4h > 0:
-                warning_label = " ( ⚠️اتجاه متقدم)" if age_4h > 4 else ""
-                stock_lines.append(f"• Power Trend 4H : شمعة {age_4h}{warning_label}")
-
-            if age_15m > 0:
-                stock_lines.append(f"• Power Trend 15M : شمعة {age_15m}")
+            if 'bounce_pct' in row:
+                stock_lines.append(f"📈 <b>ارتداد 15M:</b> +{row['bounce_pct']:.2f}% من القاع اللحظي")
+                stock_lines.append(f"📊 <b>فوليوم 15M:</b> {row['vol_15m']:,} (تسارع {row['vol_ratio']:.1f}x)")
 
             if rsi > 0:
                 stock_lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
-            if has_weekly_choch:
-                stock_lines.append("⚡️ <b>[CHOCH أسبوعي إيجابي: كسر القمة الأسبوعية]</b>")
 
             stock_lines.append(f"🏢 <b>القطاع:</b> {sector}")
             stock_lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
-            if high52 > 0 and low52 > 0:
-                stock_lines.append(f"🏔️ <b>قمة 52 أسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
-                stock_lines.append(f"⛰️ <b>قاع 52 أسبوع:</b> {low52:.2f} ر.س (+{dist_low52:.1f}%)")
             stock_lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
 
-            if 'tp_3m' in row and row['tp_3m'] and 'sl_3m' in row and row['sl_3m']:
-                stock_lines.append(f"🎯 <b>هدف 3m (1.5 R:R):</b> {row['tp_3m']:.2f} ر.س | ⛔️ <b>وقف 3m:</b> {row['sl_3m']:.2f} ر.س")
-
-            if 'poc' in row and row.get('poc'):
-                stock_lines.append(f"📍 <b>POC:</b> {row['poc']:.2f} ر.س | <b>Value Area:</b> {row['val']:.2f} - {row['vah']:.2f} ر.س")
-                stock_lines.append(f"💥 <b>مستوى الاختراق:</b> {row['breakout_level']:.2f} ر.س | <b>Rel Vol:</b> {row['rel_volume']:.2f}x")
-
             stock_lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
-            stock_lines.append(f"(أقصى هدف: {lvl['t_max']:.2f} ر.س)")
             stock_lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
             if vwap > 0:
                 stock_lines.append(f"📊 <b>VWAP:</b> {vwap:.2f} ر.س")
@@ -647,12 +642,7 @@ def main():
 
             blocks.append("\n".join(stock_lines))
 
-        footer = ""
-        if len(results) > MAX_SHOWN:
-            footer = f"\n+{len(results) - MAX_SHOWN} أسهم أخرى متطابقة...\nللفرز فقط، تأكد على الشارت قبل أي قرار."
-        else:
-            footer = "\nللفرز فقط، تأكد على الشارت قبل أي قرار."
-
+        footer = "\nللفرز فقط، تأكد على الشارت قبل أي قرار."
         send_chunked(header, blocks, footer)
 
     save_seen(today, counts, now_timestamp)
