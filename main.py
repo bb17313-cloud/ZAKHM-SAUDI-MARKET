@@ -75,66 +75,66 @@ def get_saudi_stocks_dict():
 
 
 def screens():
-    """الفلاتر الأساسية المحسّنة"""
+    """الفلاتر الأساسية بعد تعديل الشروط"""
     
-    # 1. بداية انطلاق (0.5% - 2.5%)
+    # 1. بداية انطلاق (0.5% - 2.5%) - فوليوم 100k
     early_momentum = [
         col("close") > 0,
         col("change") >= 0.5,
         col("change") <= 2.5,
-        col("volume") >= 150000,
+        col("volume") >= 100000,
         col("close") > col("VWAP")
     ]
 
-    # 2. اختراق لحظي وسيولة (1.0% - 6.0%)
+    # 2. اختراق لحظي وسيولة (1.0% - 6.0%) - فوليوم 100k
     intraday_breakout = [
         col("close") > 0,
         col("change") >= 1.0,
         col("change") <= 6.0,
-        col("volume") >= 200000,
+        col("volume") >= 100000,
         col("close") > col("VWAP"),
         col("close") > col("EMA20")
     ]
 
-    # 3. اختراق أسبوعي
+    # 3. اختراق أسبوعي - فوليوم 100k
     swing_choch = [
         col("close") > 0,
         col("change") >= 1.0,
-        col("volume") >= 200000,
+        col("volume") >= 100000,
         col("close") > col("EMA20"),
         col("close") > col("high|1W")
     ]
 
-    # 4. فلتر الانعكاس
+    # 4. فلتر الانعكاس - تصفية مبدئية بالفوليوم اليومي مع شرط شمعة الساعة بالدالة
     reversal_signal = [
         col("close") > 0,
-        col("volume") >= 100000,
+        col("volume") >= 20000,
         col("RSI") <= 35,
         col("SMA10") > col("SMA20"),
         col("SMA10|1") <= col("SMA20|1")
     ]
 
-    # 5. زخم 3 دقائق
+    # 5. زخم 3 دقائق - فوليوم تصفية مبدئي
     momentum_3m = [
         col("close") > 0,
         col("change") >= 0.5,
-        col("volume") >= 100000,
+        col("volume") >= 10000,
         col("close") > col("VWAP"),
         col("close") > col("EMA10")
     ]
 
-    # 6. فلتر VVV
+    # 6. فلتر VVV - فوليوم 80k
     vvv_candidates = [
         col("close") > 0,
         col("change") >= 0.3,
-        col("volume") >= 150000,
+        col("volume") >= 80000,
         col("close") > col("VWAP"),
     ]
 
-    # 7. فلتر الارتداد المبكر مع تسارع الفوليوم (فاصل 15 دقيقة)
+    # 7. فلتر الارتداد المبكر (15 دقيقة) - فوليوم تصفية مبدئي
     v_bottom_bounce_15m = [
         col("close") > 0,
-        col("volume") >= 50000,
+        col("volume") >= 5000,
     ]
 
     extra = ["close", "change", "volume"]
@@ -158,8 +158,29 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
+def check_1h_reversal_signal(ticker):
+    """فحص فوليوم شمعة الساعة الحالية لفلتر الانعكاس (>= 20,000 سهم)"""
+    if tv is None:
+        return True, None
+
+    try:
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_1_hour, n_bars=10)
+        if df is None or df.empty:
+            return False, None
+
+        curr_vol = float(df['volume'].iloc[-1])
+
+        if curr_vol >= 20000:
+            return True, {"vol_1h": int(curr_vol)}
+
+        return False, None
+    except Exception as e:
+        print(f"خطأ في فحص فلتر الانعكاس 1 ساعة للسهم {ticker}: {e}")
+        return False, None
+
+
 def check_15m_bounce_signal(ticker):
-    """فحص الارتداد المبكر وتصاعد الفوليوم على فاصل 15 دقيقة"""
+    """فحص الارتداد المبكر وتصاعد الفوليوم (>= 5,000 للشمعة) على فاصل 15 دقيقة"""
     if tv is None:
         return True, None
 
@@ -174,27 +195,26 @@ def check_15m_bounce_signal(ticker):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
 
-        # أدنى سعر خلال آخر 4 شموع (ساعة كاملة)
         local_low = float(df['low'].iloc[-4:].min())
         curr_price = float(curr['close'])
 
-        # 1. نسبة الارتداد من أدنى سعر القاع اللحظي (0.8% فما فوق)
         bounce_pct = ((curr_price - local_low) / local_low) * 100
         has_bounce = bounce_pct >= 0.8
 
-        # 2. شرط الفوليوم: الشمعة الحالية أكبر من متوسط 10 شموع بـ 1.25 ضعف أو تصاعد متتالي للسيولة
-        vol_sma = float(curr['vol_sma10']) if curr['vol_sma10'] else 1.0
-        vol_spike = float(curr['volume']) >= (vol_sma * 1.25)
-        vol_ascending = (float(curr['volume']) > float(prev1['volume'])) and (float(prev1['volume']) > float(prev2['volume']))
+        curr_vol = float(curr['volume'])
+        has_min_vol_15m = curr_vol >= 5000
 
-        # 3. إغلاق الشمعة أخضر أو قريب جداً من الأعلى
+        vol_sma = float(curr['vol_sma10']) if curr['vol_sma10'] else 1.0
+        vol_spike = curr_vol >= (vol_sma * 1.25)
+        vol_ascending = (curr_vol > float(prev1['volume'])) and (float(prev1['volume']) > float(prev2['volume']))
+
         is_green_candle = curr_price > float(curr['open']) or curr_price >= float(curr['high']) * 0.998
 
-        if has_bounce and (vol_spike or vol_ascending) and is_green_candle:
+        if has_bounce and has_min_vol_15m and (vol_spike or vol_ascending) and is_green_candle:
             return True, {
                 "bounce_pct": bounce_pct,
-                "vol_15m": int(curr['volume']),
-                "vol_ratio": float(curr['volume']) / vol_sma if vol_sma else 1.0
+                "vol_15m": int(curr_vol),
+                "vol_ratio": curr_vol / vol_sma if vol_sma else 1.0
             }
 
         return False, None
@@ -204,7 +224,7 @@ def check_15m_bounce_signal(ticker):
 
 
 def check_3m_pine_signal(ticker):
-    """فحص شروط Pine Script الخاصة بفلتر زخم 3 دقائق"""
+    """فحص شروط زخم 3 دقائق (فوليوم الشمعة الحالية >= 10,000)"""
     if tv is None:
         return True, None, None
 
@@ -224,12 +244,15 @@ def check_3m_pine_signal(ticker):
         prev1 = df.iloc[-2]
         prev2 = df.iloc[-3]
 
+        curr_vol = float(curr['volume'])
+        has_min_vol_3m = curr_vol >= 10000
+
         is_gain = curr['candle_change'] >= 0.8
-        is_vol_acc = (curr['volume'] > prev1['volume']) and (prev1['volume'] > prev2['volume'])
-        is_vol_spike = curr['volume'] > (curr['vol_sma20'] * 1.1)
+        is_vol_acc = (curr_vol > prev1['volume']) and (prev1['volume'] > prev2['volume'])
+        is_vol_spike = curr_vol > (curr['vol_sma20'] * 1.1)
         is_above_trend = (curr['close'] > curr['ema10']) or (curr['close'] > curr['vwap'])
 
-        buy_signal = is_gain and is_vol_acc and is_vol_spike and is_above_trend
+        buy_signal = is_gain and is_vol_acc and is_vol_spike and is_above_trend and has_min_vol_3m
 
         if buy_signal:
             stop_loss = float(curr['low'])
@@ -336,38 +359,6 @@ def check_vvv_setup(ticker):
     except Exception as e:
         print(f"خطأ في فحص إعداد VVV للسهم {ticker}: {e}")
         return False, None
-
-
-def get_historical_power_trend_age(ticker, interval):
-    """حساب عدد الشموع المتتالية لـ Power Trend"""
-    if tv is None:
-        return 0
-
-    try:
-        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=interval, n_bars=100)
-        if df is None or df.empty or len(df) < 50:
-            return 0
-
-        df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
-        df['sma50'] = df['close'].rolling(window=50).mean()
-        df['rsi'] = calculate_rsi(df['close'], 14)
-
-        df['pt_active'] = (
-            (df['close'] > df['ema20']) &
-            (df['ema20'] > df['sma50']) &
-            (df['rsi'] > 50)
-        )
-
-        age = 0
-        for is_active in reversed(df['pt_active'].values):
-            if bool(is_active):
-                age += 1
-            else:
-                break
-        return age
-    except Exception as e:
-        print(f"خطأ في جلب تاريخ الشمعات للسهم {ticker}: {e}")
-        return 0
 
 
 def run_screen(filters, columns, sort_col, tickers_dict):
@@ -543,8 +534,20 @@ def main():
             df = df[df["close"] >= df["high"] * 0.98]
         elif "اختراق لحظي" in label:
             df = df[df["close"] >= df["high"] * 0.98]
+        elif "الانعكاس" in label:
+            # فحص فوليوم شمعة الساعة (>= 20,000)
+            if tv is not None:
+                valid_rows = []
+                for _, row in df.iterrows():
+                    ticker_name = str(row.get('clean_name', row['name'])).strip()
+                    is_valid, rev_info = check_1h_reversal_signal(ticker_name)
+                    if is_valid:
+                        row_dict = row.to_dict()
+                        if rev_info:
+                            row_dict.update(rev_info)
+                        valid_rows.append(row_dict)
+                df = pd.DataFrame(valid_rows)
         elif "15 دقيقة" in label:
-            # التصفية الجديدة لفاصل 15 دقيقة مع تسارع الفوليوم
             if tv is not None:
                 valid_rows = []
                 for _, row in df.iterrows():
@@ -622,6 +625,9 @@ def main():
 
             stock_lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             stock_lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
+
+            if 'vol_1h' in row:
+                stock_lines.append(f"⏱️ <b>فوليوم شمعة الساعة:</b> {row['vol_1h']:,} سهم")
 
             if 'bounce_pct' in row:
                 stock_lines.append(f"📈 <b>ارتداد 15M:</b> +{row['bounce_pct']:.2f}% من القاع اللحظي")
