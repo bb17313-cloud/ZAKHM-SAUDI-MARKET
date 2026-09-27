@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 from tradingview_screener import Query, col
 
-# استيراد TvDatafeed لحساب التاريخي
+# استيراد TvDatafeed لحساب التاريخي والهارمونيك
 try:
     from tvdatafeed import TvDatafeed, Interval
     tv = TvDatafeed()
@@ -75,7 +75,7 @@ def get_saudi_stocks_dict():
 
 
 def screens():
-    """الفلاتر الأساسية بعد تعديل الشروط"""
+    """الفلاتر الأساسية مع تعديل الشروط"""
     
     # 1. بداية انطلاق (0.5% - 2.5%) - فوليوم 100k
     early_momentum = [
@@ -105,13 +105,11 @@ def screens():
         col("close") > col("high|1W")
     ]
 
-    # 4. فلتر الانعكاس - تصفية مبدئية بالفوليوم اليومي مع شرط شمعة الساعة بالدالة
+    # 4. فلتر الانعكاس الهارمونيك المطور (تصفية مبدئية)
     reversal_signal = [
         col("close") > 0,
         col("volume") >= 20000,
-        col("RSI") <= 35,
-        col("SMA10") > col("SMA20"),
-        col("SMA10|1") <= col("SMA20|1")
+        col("RSI") <= 40,
     ]
 
     # 5. زخم 3 دقائق - فوليوم تصفية مبدئي
@@ -142,7 +140,7 @@ def screens():
         "1️⃣ بداية انطلاق (0.5% - 2.5%)": early_momentum,
         "2️⃣ اختراق لحظي وسيولة (1.0% - 6.0%)": intraday_breakout,
         "3️⃣ اختراق و CHOCH أسبوعي": swing_choch,
-        "🔄 فلتر الانعكاس (SMA Cross + RSI <= 35)": reversal_signal,
+        "🔄 4️⃣ الانعكاس والهارمونيك AB=CD (1H)": reversal_signal,
         "⚡ 5️⃣ زخم 3 دقائق (Pine Script)": momentum_3m,
         "🎯 VVV Alert (POC + اختراق)": vvv_candidates,
         "🔄 7️⃣ ارتداد الفوليوم المبكر (فاصل 15 دقيقة)": v_bottom_bounce_15m,
@@ -158,24 +156,107 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def check_1h_reversal_signal(ticker):
-    """فحص فوليوم شمعة الساعة الحالية لفلتر الانعكاس (>= 20,000 سهم)"""
+def check_abcd_reversal_1h(ticker):
+    """فحص نموذج الهارمونيك AB=CD وانعكاس الزخم على فاصل 1H"""
     if tv is None:
         return True, None
 
     try:
-        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_1_hour, n_bars=10)
-        if df is None or df.empty:
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_1_hour, n_bars=60)
+        if df is None or df.empty or len(df) < 30:
             return False, None
 
-        curr_vol = float(df['volume'].iloc[-1])
+        df['rsi'] = calculate_rsi(df['close'], 14)
+        df['sma10'] = df['close'].rolling(10).mean()
+        df['sma20'] = df['close'].rolling(20).mean()
 
-        if curr_vol >= 20000:
-            return True, {"vol_1h": int(curr_vol)}
+        curr = df.iloc[-1]
+        curr_vol = float(curr['volume'])
+        curr_price = float(curr['close'])
+        curr_rsi = float(curr['rsi']) if not pd.isna(curr['rsi']) else 50.0
+
+        # شرط السيولة: شمعة الساعة >= 20,000 سهم
+        if curr_vol < 20000:
+            return False, None
+
+        # استخراج القمم والقيعان (Pivot Highs & Pivot Lows)
+        highs = df['high'].values
+        lows = df['low'].values
+
+        pivot_highs = []
+        pivot_lows = []
+
+        for i in range(2, len(df) - 2):
+            if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
+                pivot_highs.append((i, highs[i]))
+            if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+                pivot_lows.append((i, lows[i]))
+
+        has_abcd = False
+        prz_d = 0.0
+        bc_ratio = 0.0
+
+        # البحث عن متتالية الهارمونيك A -> B -> C -> D
+        if len(pivot_highs) >= 2 and len(pivot_lows) >= 1:
+            for ph1 in reversed(pivot_highs[-4:]):  # القمة A
+                a_idx, a_price = ph1
+                b_candidates = [pl for pl in pivot_lows if pl[0] > a_idx]  # القاع B
+                if not b_candidates:
+                    continue
+                b_idx, b_price = b_candidates[0]
+
+                c_candidates = [ph for ph in pivot_highs if ph[0] > b_idx and ph[1] < a_price]  # القمة C
+                if not c_candidates:
+                    continue
+                c_idx, c_price = c_candidates[0]
+
+                if len(df) - 1 <= c_idx:
+                    continue
+
+                ab_len = a_price - b_price
+                bc_len = c_price - b_price
+
+                if ab_len <= 0 or bc_len <= 0:
+                    continue
+
+                ratio = bc_len / ab_len
+
+                # نسبة تصحيح الموجة BC يجب أن تكون بين 50% إلى 88.6%
+                if 0.50 <= ratio <= 0.886:
+                    target_d = c_price - ab_len  # معادلة AB = CD
+                    price_diff_pct = abs(curr_price - target_d) / target_d * 100
+
+                    # التأكد من وصول السعر لنطاق منطقة الانعكاس PRZ (هامش ±2.5%)
+                    if price_diff_pct <= 2.5:
+                        has_abcd = True
+                        prz_d = target_d
+                        bc_ratio = ratio * 100
+                        break
+
+        # شروط تأكيد الارتداد
+        sma_cross = float(curr['sma10']) > float(curr['sma20']) if not pd.isna(curr['sma10']) and not pd.isna(curr['sma20']) else False
+        rsi_oversold = curr_rsi <= 38
+        is_green_candle = curr_price > float(curr['open'])
+
+        # قبول الإشارة إذا تحقق نموذج AB=CD مع تأكيد زخم، أو انعكاس RSI و SMA كلاسيكي
+        if has_abcd and (rsi_oversold or sma_cross or is_green_candle):
+            return True, {
+                "vol_1h": int(curr_vol),
+                "rsi_1h": curr_rsi,
+                "has_abcd": True,
+                "prz_d": prz_d,
+                "bc_ratio": bc_ratio
+            }
+        elif not has_abcd and rsi_oversold and sma_cross:
+            return True, {
+                "vol_1h": int(curr_vol),
+                "rsi_1h": curr_rsi,
+                "has_abcd": False
+            }
 
         return False, None
     except Exception as e:
-        print(f"خطأ في فحص فلتر الانعكاس 1 ساعة للسهم {ticker}: {e}")
+        print(f"خطأ في فحص نموذج AB=CD للسهم {ticker}: {e}")
         return False, None
 
 
@@ -535,16 +616,16 @@ def main():
         elif "اختراق لحظي" in label:
             df = df[df["close"] >= df["high"] * 0.98]
         elif "الانعكاس" in label:
-            # فحص فوليوم شمعة الساعة (>= 20,000)
+            # فحص الهارمونيك AB=CD وفوليوم شمعة الساعة
             if tv is not None:
                 valid_rows = []
                 for _, row in df.iterrows():
                     ticker_name = str(row.get('clean_name', row['name'])).strip()
-                    is_valid, rev_info = check_1h_reversal_signal(ticker_name)
+                    is_valid, abcd_info = check_abcd_reversal_1h(ticker_name)
                     if is_valid:
                         row_dict = row.to_dict()
-                        if rev_info:
-                            row_dict.update(rev_info)
+                        if abcd_info:
+                            row_dict.update(abcd_info)
                         valid_rows.append(row_dict)
                 df = pd.DataFrame(valid_rows)
         elif "15 دقيقة" in label:
@@ -611,7 +692,7 @@ def main():
             change = float(row[chg_c]) if row[chg_c] else 0.0
             volume = float(row[vol_c]) if row[vol_c] else 0.0
             vwap = float(row.get('VWAP', 0.0) or 0.0)
-            rsi = float(row.get('RSI', 0.0) or 0.0)
+            rsi = float(row.get('rsi_1h', row.get('RSI', 0.0)) or 0.0)
 
             high = float(row['high']) if 'high' in row and row['high'] else price * 1.02
             low = float(row['low']) if 'low' in row and row['low'] else price * 0.98
@@ -626,6 +707,10 @@ def main():
             stock_lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
             stock_lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
 
+            if row.get('has_abcd'):
+                stock_lines.append(f"📐 <b>نموذج الهارمونيك:</b> AB=CD مكتمل على فاصل الساعة (1H)")
+                stock_lines.append(f"🎯 <b>منطقة الانعكاس PRZ (D):</b> {row['prz_d']:.2f} ر.س | <b>نسبة BC:</b> {row['bc_ratio']:.1f}%")
+
             if 'vol_1h' in row:
                 stock_lines.append(f"⏱️ <b>فوليوم شمعة الساعة:</b> {row['vol_1h']:,} سهم")
 
@@ -634,7 +719,7 @@ def main():
                 stock_lines.append(f"📊 <b>فوليوم 15M:</b> {row['vol_15m']:,} (تسارع {row['vol_ratio']:.1f}x)")
 
             if rsi > 0:
-                stock_lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
+                stock_lines.append(f"📉 <b>RSI (1H):</b> {rsi:.1f}")
 
             stock_lines.append(f"🏢 <b>القطاع:</b> {sector}")
             stock_lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
