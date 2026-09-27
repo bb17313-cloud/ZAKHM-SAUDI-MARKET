@@ -134,8 +134,6 @@ def screens():
         col("close") > col("EMA10")
     ]
 
-    # فلتر مرشحين أولي لـ VVV (POC + اختراق قاعدة + VWAP صاعد + انفجار حجم)
-    # هذا فقط لتضييق القائمة قبل الفحص التاريخي الأثقل (per-symbol) في check_vvv_setup
     vvv_candidates = [
         col("close") > 0,
         col("change") >= 0.3,
@@ -205,16 +203,11 @@ def check_3m_pine_signal(ticker):
 
 
 def calculate_volume_profile(df, num_bins=VVV_BINS, value_area_pct=VVV_VALUE_AREA_PCT):
-    """
-    يحسب Point of Control (POC) ومنطقة القيمة (Value Area) من إطار بيانات OHLCV.
-    نفس منطق poc_filter.py لكن مبني على DataFrame مباشرة (متوافق مع بيانات tvdatafeed).
-    يرجع dict: {"poc": ..., "vah": ..., "val": ...}
-    """
+    """حساب POC و Value Area"""
     lo = float(df['low'].min())
     hi = float(df['high'].max())
 
     if hi == lo:
-        total_vol = float(df['volume'].sum())
         return {"poc": hi, "vah": hi, "val": lo}
 
     bin_size = (hi - lo) / num_bins
@@ -254,16 +247,7 @@ def calculate_volume_profile(df, num_bins=VVV_BINS, value_area_pct=VVV_VALUE_ARE
 
 
 def check_vvv_setup(ticker):
-    """
-    فحص إعداد VVV (فوليوم بروفايل + VWAP + فوليوم بار) على فريم 15 دقيقة:
-      1. قاعدة ضيقة خلال آخر VVV_LOOKBACK شمعة
-      2. اختراق فوق أعلى قمة في القاعدة
-      3. VWAP صاعد والسعر فوقه
-      4. انفجار حجم مقارنة بمتوسط القاعدة
-      5. POC / Value Area من فوليوم بروفايل كمرجع دعم/مقاومة
-
-    يرجع (True, data_dict) عند تحقق الإعداد، أو (False, None) غير ذلك.
-    """
+    """فحص إعداد VVV"""
     if tv is None:
         return False, None
 
@@ -414,12 +398,11 @@ def send(text):
         )
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:
-        # لا نوقف كل الفحص بسبب رسالة واحدة فاشلة (طول زائد أو HTML غير صالح)
-        print(f"خطأ تيليجرام (400/غيره): {e} — نص الرسالة (أول 300 حرف): {text[:300]}")
+        print(f"خطأ تيليجرام: {e} — نص الرسالة (أول 300 حرف): {text[:300]}")
 
 
 def escape_html(value) -> str:
-    """يهرب رموز HTML الخاصة كي لا تكسر parse_mode=HTML في تيليجرام."""
+    """تهريب رموز HTML لتيليجرام"""
     return (
         str(value)
         .replace("&", "&amp;")
@@ -429,13 +412,8 @@ def escape_html(value) -> str:
 
 
 def send_chunked(header, blocks, footer=""):
-    """
-    يرسل رسالة طويلة كعدة رسائل تيليجرام منفصلة، كل واحدة أقل من حد تيليجرام (4096 حرف).
-    header: يُضاف في بداية أول رسالة فقط.
-    blocks: قائمة نصوص، كل عنصر = بلوك سهم واحد كامل (وسومه متوازنة داخليًا).
-    footer: يُضاف في نهاية آخر رسالة.
-    """
-    MAX_LEN = 3800  # هامش أمان تحت حد تيليجرام (4096)
+    """إرسال التنبيهات مقسمة لحزم آمنة تحت حد حروف تلغرام"""
+    MAX_LEN = 3800
 
     chunks = []
     current = f"{header}\n\n" if header else ""
@@ -490,7 +468,6 @@ def main():
 
     elapsed = now_timestamp - last_run_timestamp
 
-    # تحقق مما إذا مرت 3 دقائق (180 ثانية) منذ آخر فحص
     if elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
         print(f"⏳ لم تمضِ 3 دقائق بعد منذ آخر فحص. المتبقي: {remaining} ثانية.")
@@ -523,7 +500,6 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
-        # تصفيات فرعية خاصة لكل فلتر
         if label == "1️⃣ بداية انطلاق (0.5% - 1.5%)":
             df = df[df["close"] >= df["high"] * 0.985]
         elif label == "2️⃣ اختراق لحظي وسيولة":
@@ -571,7 +547,7 @@ def main():
         blocks = []
 
         for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
-            lines = []
+            stock_lines = []
             arabic_name = escape_html(stocks_dict.get(ticker, ticker))
             sector = escape_html(str(row.get('sector', 'N/A')).strip())
 
@@ -588,11 +564,9 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
-            # حساب عمر الشمعة للفريمات التاريخية
             age_4h = get_historical_power_trend_age(ticker, Interval.in_4_hour) if tv else 0
             age_15m = get_historical_power_trend_age(ticker, Interval.in_15_minute) if tv else 0
 
-            # CHOCH أسبوعي
             high_1w = float(row.get('high|1W', 0.0) or 0.0)
             high_2w = float(row.get('high|2W', 0.0) or 0.0)
             has_weekly_choch = (high_1w > 0 and price > high_1w) or (high_2w > 0 and price > high_2w)
@@ -609,51 +583,54 @@ def main():
             lvl = calculate_levels(price, high, low, ema20, ema50)
 
             if is_vvv_screen:
-                lines.append(f"🎯 <b>#vvv_alert – #{idx} {arabic_name} ({ticker})</b>")
+                stock_lines.append(f"🎯 <b>#vvv_alert – #{idx} {arabic_name} ({ticker})</b>")
             else:
-                lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
-            lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
+                stock_lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
+            stock_lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
 
             if age_4h > 0:
                 warning_label = " ( ⚠️اتجاه متقدم)" if age_4h > 4 else ""
-                lines.append(f"• Power Trend 4H : شمعة {age_4h}{warning_label}")
+                stock_lines.append(f"• Power Trend 4H : شمعة {age_4h}{warning_label}")
 
             if age_15m > 0:
-                lines.append(f"• Power Trend 15M : شمعة {age_15m}")
+                stock_lines.append(f"• Power Trend 15M : شمعة {age_15m}")
 
             if rsi > 0:
-                lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
+                stock_lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
             if has_weekly_choch:
-                lines.append("⚡️ <b>[CHOCH أسبوعي إيجابي: كسر القمة الأسبوعية]</b>")
+                stock_lines.append("⚡️ <b>[CHOCH أسبوعي إيجابي: كسر القمة الأسبوعية]</b>")
 
-            lines.append(f"🏢 <b>القطاع:</b> {sector}")
-            lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
+            stock_lines.append(f"🏢 <b>القطاع:</b> {sector}")
+            stock_lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
             if high52 > 0 and low52 > 0:
-                lines.append(f"🏔️ <b>قمة 52 أسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
-                lines.append(f"⛰️ <b>قاع 52 أسبوع:</b> {low52:.2f} ر.س (+{dist_low52:.1f}%)")
-            lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
+                stock_lines.append(f"🏔️ <b>قمة 52 أسبوع:</b> {high52:.2f} ر.س ({dist_high52:.1f}%)")
+                stock_lines.append(f"⛰️ <b>قاع 52 أسبوع:</b> {low52:.2f} ر.س (+{dist_low52:.1f}%)")
+            stock_lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
 
             if 'tp_3m' in row and row['tp_3m'] and 'sl_3m' in row and row['sl_3m']:
-                lines.append(f"🎯 <b>هدف 3m (1.5 R:R):</b> {row['tp_3m']:.2f} ر.س | ⛔️ <b>وقف 3m:</b> {row['sl_3m']:.2f} ر.س")
+                stock_lines.append(f"🎯 <b>هدف 3m (1.5 R:R):</b> {row['tp_3m']:.2f} ر.س | ⛔️ <b>وقف 3m:</b> {row['sl_3m']:.2f} ر.س")
 
             if 'poc' in row and row.get('poc'):
-                lines.append(f"📍 <b>POC:</b> {row['poc']:.2f} ر.س | <b>Value Area:</b> {row['val']:.2f} - {row['vah']:.2f} ر.س")
-                lines.append(f"💥 <b>مستوى الاختراق:</b> {row['breakout_level']:.2f} ر.س | <b>Rel Vol:</b> {row['rel_volume']:.2f}x")
+                stock_lines.append(f"📍 <b>POC:</b> {row['poc']:.2f} ر.س | <b>Value Area:</b> {row['val']:.2f} - {row['vah']:.2f} ر.س")
+                stock_lines.append(f"💥 <b>مستوى الاختراق:</b> {row['breakout_level']:.2f} ر.س | <b>Rel Vol:</b> {row['rel_volume']:.2f}x")
 
-            lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
-            lines.append(f"(أقصى هدف: {lvl['t_max']:.2f} ر.س)")
-            lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
+            stock_lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
+            stock_lines.append(f"(أقصى هدف: {lvl['t_max']:.2f} ر.س)")
+            stock_lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
             if vwap > 0:
-                lines.append(f"📊 <b>VWAP:</b> {vwap:.2f} ر.س")
-            lines.append("-----------------------------------\n")
+                stock_lines.append(f"📊 <b>VWAP:</b> {vwap:.2f} ر.س")
+            stock_lines.append("-----------------------------------\n")
 
+            blocks.append("\n".join(stock_lines))
+
+        footer = ""
         if len(results) > MAX_SHOWN:
-            lines.append(f"+{len(results) - MAX_SHOWN} أخرى\n")
-        lines.append("للفرز فقط، تأكد على الشارت قبل أي قرار.")
+            footer = f"\n+{len(results) - MAX_SHOWN} أسهم أخرى متطابقة...\nللفرز فقط، تأكد على الشارت قبل أي قرار."
+        else:
+            footer = "\nللفرز فقط، تأكد على الشارت قبل أي قرار."
 
-        send("\n".join(lines))
+        send_chunked(header, blocks, footer)
 
-    # حفظ وقت الفحص الجديد عند اكتمال العملية
     save_seen(today, counts, now_timestamp)
     if had_error:
         sys.exit(1)
