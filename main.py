@@ -38,7 +38,7 @@ VVV_BINS = 24                 # عدد شرائح فوليوم بروفايل
 def get_saudi_stocks_dict():
     """قائمة الأسهم السعودية المحدثة"""
     return {
-        # الأسهم المضافة
+        # الأسهم المضافة حديثاً
         "4150": "التعمير",
         "9523": "لدن",
         
@@ -97,9 +97,9 @@ def get_saudi_stocks_dict():
 
 
 def screens():
-    """الفلاتر الأساسية المحسّنة بطريقة عملية"""
+    """الفلاتر الأساسية المحسّنة"""
     
-    # 1. بداية انطلاق: تم توسيع السقف من 1.5% إلى 2.5%
+    # 1. بداية انطلاق (0.5% - 2.5%)
     early_momentum = [
         col("close") > 0,
         col("change") >= 0.5,
@@ -108,7 +108,7 @@ def screens():
         col("close") > col("VWAP")
     ]
 
-    # 2. اختراق لحظي وسيولة: تم توسيع السقف إلى 6.0% لاقتناص الأسهم الأكثر ارتفاعاً
+    # 2. اختراق لحظي وسيولة (1.0% - 6.0%)
     intraday_breakout = [
         col("close") > 0,
         col("change") >= 1.0,
@@ -127,7 +127,7 @@ def screens():
         col("close") > col("high|1W")
     ]
 
-    # 4. فلتر الانعكاس: تم رفع RSI إلى 35
+    # 4. فلتر الانعكاس
     reversal_signal = [
         col("close") > 0,
         col("volume") >= 100000,
@@ -153,6 +153,15 @@ def screens():
         col("close") > col("VWAP"),
     ]
 
+    # 7. فلتر الارتداد القوي من القاع اللحظي (V-Shape Reversal - 2%)
+    v_bottom_bounce = [
+        col("close") > 0,
+        col("volume") >= 100000,
+        col("close") > col("VWAP"),
+        col("close") >= col("low") * 1.02,      # صعود بنسبة 2% أو أكثر من أدنى سعر سجله لليوم
+        col("close") >= col("high") * 0.985    # التداول قرب أعلى سعر وصل له الارتداد (ضمن 1.5%)
+    ]
+
     extra = ["close", "change", "volume"]
     return extra, "change", {
         "1️⃣ بداية انطلاق (0.5% - 2.5%)": early_momentum,
@@ -161,6 +170,7 @@ def screens():
         "🔄 فلتر الانعكاس (SMA Cross + RSI <= 35)": reversal_signal,
         "⚡ 5️⃣ زخم 3 دقائق (Pine Script)": momentum_3m,
         "🎯 VVV Alert (POC + اختراق)": vvv_candidates,
+        "🔄 7️⃣ ارتداد قوي من القاع (V-Reversal 2%)": v_bottom_bounce,
     }
 
 
@@ -512,7 +522,6 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
-        # تطبيق فلترة الحفاظ على القمة بطريقة مرنة وعملية (ضمن 2% من قمة اليوم)
         if "بداية انطلاق" in label:
             df = df[df["close"] >= df["high"] * 0.98]
         elif "اختراق لحظي" in label:
