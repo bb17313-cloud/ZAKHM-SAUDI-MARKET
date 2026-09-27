@@ -153,13 +153,11 @@ def screens():
         col("close") > col("VWAP"),
     ]
 
-    # 7. فلتر الارتداد القوي من القاع اللحظي (V-Shape Reversal - 2%)
+    # 7. فلتر الارتداد القوي من القاع اللحظي (V-Shape Reversal)
     v_bottom_bounce = [
         col("close") > 0,
         col("volume") >= 100000,
         col("close") > col("VWAP"),
-        col("close") >= col("low") * 1.02,      # صعود بنسبة 2% أو أكثر من أدنى سعر سجله لليوم
-        col("close") >= col("high") * 0.985    # التداول قرب أعلى سعر وصل له الارتداد (ضمن 1.5%)
     ]
 
     extra = ["close", "change", "volume"]
@@ -522,10 +520,14 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
+        # تطبيق التصفية الخاصة بكل فلتر عبر Pandas
         if "بداية انطلاق" in label:
             df = df[df["close"] >= df["high"] * 0.98]
         elif "اختراق لحظي" in label:
             df = df[df["close"] >= df["high"] * 0.98]
+        elif "ارتداد قوي من القاع" in label:
+            # صعود بنسبة 2% من القاع + التداول قرب أعلى سعر حققه الارتداد
+            df = df[(df["close"] >= df["low"] * 1.02) & (df["close"] >= df["high"] * 0.985)]
         elif label == "⚡ 5️⃣ زخم 3 دقائق (Pine Script)":
             if tv is not None:
                 valid_rows = []
