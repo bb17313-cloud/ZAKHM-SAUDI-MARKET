@@ -76,8 +76,6 @@ def get_saudi_stocks_dict():
 
 def screens():
     """الفلاتر الأساسية مع تعديل الشروط"""
-    
-    # 1. بداية انطلاق (0.5% - 2.5%) - فوليوم 100k
     early_momentum = [
         col("close") > 0,
         col("change") >= 0.5,
@@ -86,7 +84,6 @@ def screens():
         col("close") > col("VWAP")
     ]
 
-    # 2. اختراق لحظي وسيولة (1.0% - 6.0%) - فوليوم 100k
     intraday_breakout = [
         col("close") > 0,
         col("change") >= 1.0,
@@ -96,7 +93,6 @@ def screens():
         col("close") > col("EMA20")
     ]
 
-    # 3. اختراق أسبوعي - فوليوم 100k
     swing_choch = [
         col("close") > 0,
         col("change") >= 1.0,
@@ -105,14 +101,12 @@ def screens():
         col("close") > col("high|1W")
     ]
 
-    # 4. فلتر الانعكاس الهارمونيك المطور (تصفية مبدئية)
     reversal_signal = [
         col("close") > 0,
         col("volume") >= 20000,
         col("RSI") <= 40,
     ]
 
-    # 5. زخم 3 دقائق - فوليوم تصفية مبدئي
     momentum_3m = [
         col("close") > 0,
         col("change") >= 0.5,
@@ -121,7 +115,6 @@ def screens():
         col("close") > col("EMA10")
     ]
 
-    # 6. فلتر VVV - فوليوم 80k
     vvv_candidates = [
         col("close") > 0,
         col("change") >= 0.3,
@@ -129,7 +122,6 @@ def screens():
         col("close") > col("VWAP"),
     ]
 
-    # 7. فلتر الارتداد المبكر (15 دقيقة) - فوليوم تصفية مبدئي
     v_bottom_bounce_15m = [
         col("close") > 0,
         col("volume") >= 5000,
@@ -148,7 +140,6 @@ def screens():
 
 
 def calculate_rsi(series, period=14):
-    """حساب مؤشر RSI14"""
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -157,7 +148,6 @@ def calculate_rsi(series, period=14):
 
 
 def check_abcd_reversal_1h(ticker):
-    """فحص نموذج الهارمونيك AB=CD وانعكاس الزخم على فاصل 1H"""
     if tv is None:
         return True, None
 
@@ -175,11 +165,9 @@ def check_abcd_reversal_1h(ticker):
         curr_price = float(curr['close'])
         curr_rsi = float(curr['rsi']) if not pd.isna(curr['rsi']) else 50.0
 
-        # شرط السيولة: شمعة الساعة >= 20,000 سهم
         if curr_vol < 20000:
             return False, None
 
-        # استخراج القمم والقيعان (Pivot Highs & Pivot Lows)
         highs = df['high'].values
         lows = df['low'].values
 
@@ -196,16 +184,15 @@ def check_abcd_reversal_1h(ticker):
         prz_d = 0.0
         bc_ratio = 0.0
 
-        # البحث عن متتالية الهارمونيك A -> B -> C -> D
         if len(pivot_highs) >= 2 and len(pivot_lows) >= 1:
-            for ph1 in reversed(pivot_highs[-4:]):  # القمة A
+            for ph1 in reversed(pivot_highs[-4:]):
                 a_idx, a_price = ph1
-                b_candidates = [pl for pl in pivot_lows if pl[0] > a_idx]  # القاع B
+                b_candidates = [pl for pl in pivot_lows if pl[0] > a_idx]
                 if not b_candidates:
                     continue
                 b_idx, b_price = b_candidates[0]
 
-                c_candidates = [ph for ph in pivot_highs if ph[0] > b_idx and ph[1] < a_price]  # القمة C
+                c_candidates = [ph for ph in pivot_highs if ph[0] > b_idx and ph[1] < a_price]
                 if not c_candidates:
                     continue
                 c_idx, c_price = c_candidates[0]
@@ -221,24 +208,20 @@ def check_abcd_reversal_1h(ticker):
 
                 ratio = bc_len / ab_len
 
-                # نسبة تصحيح الموجة BC يجب أن تكون بين 50% إلى 88.6%
                 if 0.50 <= ratio <= 0.886:
-                    target_d = c_price - ab_len  # معادلة AB = CD
+                    target_d = c_price - ab_len
                     price_diff_pct = abs(curr_price - target_d) / target_d * 100
 
-                    # التأكد من وصول السعر لنطاق منطقة الانعكاس PRZ (هامش ±2.5%)
                     if price_diff_pct <= 2.5:
                         has_abcd = True
                         prz_d = target_d
                         bc_ratio = ratio * 100
                         break
 
-        # شروط تأكيد الارتداد
         sma_cross = float(curr['sma10']) > float(curr['sma20']) if not pd.isna(curr['sma10']) and not pd.isna(curr['sma20']) else False
         rsi_oversold = curr_rsi <= 38
         is_green_candle = curr_price > float(curr['open'])
 
-        # قبول الإشارة إذا تحقق نموذج AB=CD مع تأكيد زخم، أو انعكاس RSI و SMA كلاسيكي
         if has_abcd and (rsi_oversold or sma_cross or is_green_candle):
             return True, {
                 "vol_1h": int(curr_vol),
@@ -261,7 +244,6 @@ def check_abcd_reversal_1h(ticker):
 
 
 def check_15m_bounce_signal(ticker):
-    """فحص الارتداد المبكر وتصاعد الفوليوم (>= 5,000 للشمعة) على فاصل 15 دقيقة"""
     if tv is None:
         return True, None
 
@@ -305,7 +287,6 @@ def check_15m_bounce_signal(ticker):
 
 
 def check_3m_pine_signal(ticker):
-    """فحص شروط زخم 3 دقائق (فوليوم الشمعة الحالية >= 10,000)"""
     if tv is None:
         return True, None, None
 
@@ -347,7 +328,6 @@ def check_3m_pine_signal(ticker):
 
 
 def calculate_volume_profile(df, num_bins=VVV_BINS, value_area_pct=VVV_VALUE_AREA_PCT):
-    """حساب POC و Value Area"""
     lo = float(df['low'].min())
     hi = float(df['high'].max())
 
@@ -390,7 +370,6 @@ def calculate_volume_profile(df, num_bins=VVV_BINS, value_area_pct=VVV_VALUE_ARE
 
 
 def check_vvv_setup(ticker):
-    """فحص إعداد VVV"""
     if tv is None:
         return False, None
 
@@ -468,22 +447,25 @@ def run_screen(filters, columns, sort_col, tickers_dict):
 
 
 def load_seen():
-    """تحميل سجل التنبيهات ووقت آخر فحص"""
+    """تحميل سجل التنبيهات ووقت آخر فحص مع إعادة الضبط التلقائي للأيام الجديدة"""
     today = datetime.now(RIYADH).strftime("%Y-%m-%d")
     try:
         with open(SEEN_FILE) as f:
             data = json.load(f)
+        # التحقق هل التاريخ المخزن يطابق تاريخ اليوم الحالي
         if data.get("date") == today:
             counts = data.get("counts", {})
             last_run_timestamp = data.get("last_run_timestamp", 0)
             return today, counts, last_run_timestamp
+        else:
+            print("📅 تاريخ جديد للسوق، جاري إعادة ضبط سجل التنبيهات والوقت لتجنب التعليق...")
+            return today, {}, 0
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     return today, {}, 0
 
 
 def save_seen(today, counts, last_run_timestamp):
-    """حفظ سجل التنبيهات ووقت الفحص الحالي"""
     with open(SEEN_FILE, "w") as f:
         json.dump({
             "date": today,
@@ -513,7 +495,6 @@ def send(text):
 
 
 def escape_html(value) -> str:
-    """تهريب رموز HTML لتيليجرام"""
     return (
         str(value)
         .replace("&", "&amp;")
@@ -523,9 +504,7 @@ def escape_html(value) -> str:
 
 
 def send_chunked(header, blocks, footer=""):
-    """إرسال التنبيهات مقسمة لحزم آمنة تحت حد حروف تلغرام"""
     MAX_LEN = 3800
-
     chunks = []
     current = f"{header}\n\n" if header else ""
 
@@ -578,12 +557,13 @@ def main():
 
     elapsed = now_timestamp - last_run_timestamp
 
-    if elapsed < CHECK_INTERVAL_SECONDS:
+    # التحقق من الفارق الزمني بشرط ألا يكون وقت التشغيل السابق قادماً من يوم قديم غير مصفر
+    if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
         print(f"⏳ لم تمضِ 3 دقائق بعد منذ آخر فحص. المتبقي: {remaining} ثانية.")
         return
 
-    print(f"🚀 مرت {int(elapsed)} ثانية - جاري تنفيذ الفحص الشامل لجميع الأسهم والفلاتر...")
+    print(f"🚀 جاري تنفيذ الفحص الشامل لجميع الأسهم والفلاتر...")
 
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
@@ -610,13 +590,11 @@ def main():
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
-        # تطبيق التصفية الخاصة بكل فلتر
         if "بداية انطلاق" in label:
             df = df[df["close"] >= df["high"] * 0.98]
         elif "اختراق لحظي" in label:
             df = df[df["close"] >= df["high"] * 0.98]
         elif "الانعكاس" in label:
-            # فحص الهارمونيك AB=CD وفوليوم شمعة الساعة
             if tv is not None:
                 valid_rows = []
                 for _, row in df.iterrows():
