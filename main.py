@@ -34,6 +34,12 @@ VVV_REL_VOLUME_MIN = 1.5      # الحد الأدنى لانفجار الحجم 
 VVV_VALUE_AREA_PCT = 0.70     # نسبة الفوليوم لمنطقة القيمة (Value Area)
 VVV_BINS = 24                 # عدد شرائح فوليوم بروفايل
 
+# --- إعدادات بطاقة LIVE (شمعة السيولة السوداء + الدايموند + التحديث الذكي) ---
+LIVE_1M_BARS = 60             # عدد شموع الدقيقة المستخدمة في التحليل
+LIQ_LOOKBACK = 20             # عدد الشموع لحساب متوسط الفوليوم
+LIQ_VOLUME_MULT = 1.8         # شمعة السيولة السوداء: فوليوم >= 1.8x المتوسط
+INITIAL_UPDATES = 6           # عدد التحديثات الأولى التي تُعدّل دائماً حتى لو لم يتغير شيء
+
 
 def get_saudi_stocks_dict():
     """قائمة الأسهم السعودية المحدثة"""
@@ -456,21 +462,23 @@ def load_seen():
         if data.get("date") == today:
             counts = data.get("counts", {})
             last_run_timestamp = data.get("last_run_timestamp", 0)
-            return today, counts, last_run_timestamp
+            cards = data.get("cards", {})
+            return today, counts, last_run_timestamp, cards
         else:
             print("📅 تاريخ جديد للسوق، جاري إعادة ضبط سجل التنبيهات والوقت لتجنب التعليق...")
-            return today, {}, 0
+            return today, {}, 0, {}
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    return today, {}, 0
+    return today, {}, 0, {}
 
 
-def save_seen(today, counts, last_run_timestamp):
+def save_seen(today, counts, last_run_timestamp, cards=None):
     with open(SEEN_FILE, "w") as f:
         json.dump({
             "date": today,
             "counts": counts,
-            "last_run_timestamp": last_run_timestamp
+            "last_run_timestamp": last_run_timestamp,
+            "cards": cards or {}
         }, f, indent=2)
 
 
@@ -492,6 +500,56 @@ def send(text):
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:
         print(f"خطأ تيليجرام: {e} — نص الرسالة: {text[:300]}")
+
+
+def send_get_id(text):
+    """إرسال رسالة وإرجاع رقمها (لتعديلها لاحقاً بدل إرسال رسالة جديدة)"""
+    if not TOKEN or not CHAT_ID:
+        print("تحذير: BOT_TOKEN أو CHAT_ID غير موجود.")
+        return None
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={
+                "chat_id": CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=20,
+        )
+        if r.ok:
+            return r.json()["result"]["message_id"]
+        print(f"خطأ تيليجرام: {r.status_code} — {r.text[:300]}")
+    except Exception as e:
+        print(f"خطأ send_get_id: {e}")
+    return None
+
+
+def edit_message(message_id, text):
+    """تعديل رسالة موجودة. يرجع True عند النجاح (أو إذا لم يتغير النص)"""
+    if not TOKEN or not CHAT_ID:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/editMessageText",
+            data={
+                "chat_id": CHAT_ID,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=20,
+        )
+        if r.ok:
+            return True
+        if "message is not modified" in r.text:
+            return True
+        print(f"خطأ تعديل الرسالة: {r.status_code} — {r.text[:300]}")
+    except Exception as e:
+        print(f"خطأ edit_message: {e}")
+    return False
 
 
 def escape_html(value) -> str:
@@ -551,8 +609,173 @@ def calculate_levels(price, high, low, ema20, ema50):
     }
 
 
+# ---------------------------------------------------------
+# شمعة السيولة السوداء + الدايموند + اتجاه 9 شموع / 3 دقائق
+# ---------------------------------------------------------
+def get_1m_df(ticker):
+    """جلب شموع الدقيقة مرة واحدة للسهم (تُستخدم للسيولة والاتجاه)"""
+    if tv is None:
+        return None
+    try:
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_1_minute, n_bars=LIVE_1M_BARS)
+        if df is None or df.empty or len(df) < 10:
+            return None
+        return df
+    except Exception as e:
+        print(f"خطأ في جلب شموع الدقيقة للسهم {ticker}: {e}")
+        return None
+
+
+def analyze_liquidity_and_diamond(df):
+    """
+    شمعة السيولة السوداء: شمعة فوليومها >= 1.8x متوسط آخر 20 شمعة.
+    إشارة الدايموند: السعر الحالي اخترق أعلى سعر (High) لآخر شمعة سوداء.
+    """
+    result = {
+        "available": False,
+        "has_black_candle": False,
+        "black_high": 0.0,
+        "diamond_breakout": False,
+        "volume_ratio": 1.0,
+    }
+    if df is None:
+        return result
+
+    try:
+        highs = df['high'].tolist()
+        closes = df['close'].tolist()
+        volumes = df['volume'].tolist()
+
+        if len(closes) < 10:
+            return result
+
+        result["available"] = True
+
+        lookback = min(LIQ_LOOKBACK, len(closes) - 3)
+        black_highs = []
+        for i in range(max(5, lookback), len(closes)):
+            vol_slice = [v for v in volumes[max(0, i - LIQ_LOOKBACK):i] if v is not None and v > 0]
+            if not vol_slice:
+                continue
+            avg_vol = sum(vol_slice) / len(vol_slice)
+            curr_vol = volumes[i] or 0.0
+
+            if avg_vol > 0 and curr_vol >= avg_vol * LIQ_VOLUME_MULT:
+                h = highs[i]
+                if h is not None:
+                    result["has_black_candle"] = True
+                    black_highs.append(round(float(h), 2))
+                    result["volume_ratio"] = round(curr_vol / avg_vol, 1)
+
+        if black_highs:
+            last_blk_high = black_highs[-1]
+            result["black_high"] = last_blk_high
+            if float(closes[-1]) >= last_blk_high:
+                result["diamond_breakout"] = True
+    except Exception as e:
+        print(f"خطأ في تحليل السيولة والدايموند: {e}")
+
+    return result
+
+
+def analyze_trend_3m(df):
+    """اتجاه آخر 9 شموع على فاصل 3 دقائق (مبنية من شموع الدقيقة)"""
+    if df is None:
+        return "غير متاح"
+    try:
+        c3 = df.resample('3min').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+        }).dropna()
+        if len(c3) > 1:
+            c3 = c3.iloc[:-1]  # حذف الشمعة غير المكتملة
+        c3 = c3.iloc[-9:]
+        if len(c3) < 3:
+            return "غير كافٍ"
+
+        c0 = float(c3['close'].iloc[-3])
+        c1 = float(c3['close'].iloc[-2])
+        c2 = float(c3['close'].iloc[-1])
+        o2 = float(c3['open'].iloc[-1])
+
+        if c0 < c1 < c2:
+            return "📈 صاعد قوي" if c2 > o2 else "📈 صاعد"
+        if c0 > c1 > c2:
+            return "📉 هابط قوي" if c2 < o2 else "📉 هابط"
+        return "➡️ عرضي"
+    except Exception as e:
+        print(f"خطأ في حساب الاتجاه: {e}")
+        return "غير متاح"
+
+
+def build_card(idx, label, header_tag, arabic_name, ticker, curr_count, sector,
+               price, change, volume, vwap, rsi, entry_price,
+               trend_word, liq, row, lvl, tv_url, time_str):
+    """بطاقة LIVE مرتبة في أقسام"""
+    sep = "───────────────"
+    lines = []
+
+    # --- الرأس ---
+    lines.append(f"🔴 <b>LIVE | #{idx} {arabic_name} ({ticker})</b>{header_tag}")
+    lines.append(f"🚨 <b>[تنبيه {curr_count}]</b> | 🏷 {escape_html(label)}")
+    lines.append(f"🏢 <b>القطاع:</b> {sector}")
+    lines.append(sep)
+
+    # --- السعر والحركة ---
+    lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}%")
+    if entry_price and entry_price > 0:
+        since = ((price - entry_price) / entry_price) * 100
+        lines.append(f"↗️ <b>التغير منذ أول تنبيه:</b> {'+' if since >= 0 else ''}{since:.2f}%")
+    lines.append(f"📊 <b>Vol:</b> {int(volume):,}" + (f" | <b>VWAP:</b> {vwap:.2f} ر.س" if vwap > 0 else ""))
+    if rsi > 0:
+        lines.append(f"📉 <b>RSI (1H):</b> {rsi:.1f}")
+    lines.append(f"🧭 <b>الاتجاه (9 شموع / 3د):</b> {trend_word}")
+    lines.append(sep)
+
+    # --- السيولة والدايموند ---
+    if not liq["available"]:
+        lines.append("⬛ <b>شمعة السيولة السوداء:</b> غير متاح")
+        lines.append("💎 <b>إشارة دايموند:</b> غير متاح")
+    else:
+        b_high = f"{liq['black_high']:.2f}" if liq["black_high"] > 0 else "—"
+        if liq["has_black_candle"]:
+            lines.append(f"⬛ <b>شمعة السيولة السوداء:</b> تم الرصد (فوليوم {liq['volume_ratio']}x | هاي: {b_high})")
+        else:
+            lines.append("⬛ <b>شمعة السيولة السوداء:</b> قيد المراقبة")
+        if liq["diamond_breakout"]:
+            lines.append(f"💎 <b>إشارة دايموند:</b> ✨ تم الاختراق فوق {b_high}")
+        else:
+            lines.append(f"💎 <b>إشارة دايموند:</b> ⏳ بانتظار اختراق {b_high}")
+    lines.append(sep)
+
+    # --- تفاصيل خاصة بالفلتر (تظهر فقط إن وجدت) ---
+    special = []
+    if row.get('has_abcd'):
+        special.append("📐 <b>نموذج الهارمونيك:</b> AB=CD مكتمل على فاصل الساعة (1H)")
+        special.append(f"🎯 <b>منطقة الانعكاس PRZ (D):</b> {row['prz_d']:.2f} ر.س | <b>نسبة BC:</b> {row['bc_ratio']:.1f}%")
+    if 'vol_1h' in row and not pd.isna(row['vol_1h']):
+        special.append(f"⏱️ <b>فوليوم شمعة الساعة:</b> {int(row['vol_1h']):,} سهم")
+    if 'bounce_pct' in row and not pd.isna(row['bounce_pct']):
+        special.append(f"📈 <b>ارتداد 15M:</b> +{row['bounce_pct']:.2f}% من القاع اللحظي")
+        special.append(f"📊 <b>فوليوم 15M:</b> {int(row['vol_15m']):,} (تسارع {row['vol_ratio']:.1f}x)")
+    if special:
+        lines.extend(special)
+        lines.append(sep)
+
+    # --- الأهداف والدعم والوقف ---
+    lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} -&gt; {lvl['t2']:.2f} -&gt; {lvl['t3']:.2f} ر.س")
+    lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
+    lines.append(sep)
+
+    # --- التذييل ---
+    lines.append(f"🕒 <b>آخر تحديث:</b> {time_str} (السعودية)")
+    lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
+    lines.append("للفرز فقط، تأكد على الشارت قبل أي قرار.")
+
+    return "\n".join(lines)
+
+
 def main():
-    today, counts, last_run_timestamp = load_seen()
+    today, counts, last_run_timestamp, cards = load_seen()
     now_timestamp = time.time()
 
     elapsed = now_timestamp - last_run_timestamp
@@ -656,11 +879,8 @@ def main():
 
         is_vvv_screen = label == "🎯 VVV Alert (POC + اختراق)"
         header_tag = " #vvv_alert" if is_vvv_screen else ""
-        header = f"🚨 <b>تحديث الزخم والأسهم | {label}</b>{header_tag}"
-        blocks = []
 
         for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
-            stock_lines = []
             arabic_name = escape_html(stocks_dict.get(ticker, ticker))
             sector = escape_html(str(row.get('sector', 'N/A')).strip())
 
@@ -677,44 +897,56 @@ def main():
             ema20 = float(row['EMA20']) if 'EMA20' in row and row['EMA20'] else price * 0.99
             ema50 = float(row['EMA50']) if 'EMA50' in row and row['EMA50'] else price * 0.97
 
+            # --- السيولة والدايموند والاتجاه (استدعاء واحد لشموع الدقيقة) ---
+            df_1m = get_1m_df(ticker)
+            liq = analyze_liquidity_and_diamond(df_1m)
+            trend_word = analyze_trend_3m(df_1m)
+
+            # --- التحديث الذكي: هل يستحق السهم تحديث بطاقته الآن؟ ---
+            card_key = f"{label}|{ticker}"
+            card_state = cards.get(card_key, {})
+            updates_done = card_state.get("updates", 0)
+            last_price = card_state.get("last_price", price)
+            price_increased = price > last_price
+            black_appeared = liq["has_black_candle"] and not card_state.get("last_black_candle", False)
+            diamond_appeared = liq["diamond_breakout"] and not card_state.get("last_diamond", False)
+
+            if card_state and not (updates_done < INITIAL_UPDATES or price_increased or black_appeared or diamond_appeared):
+                print(f"ℹ️ {ticker} ({label}) مستقر — تخطي التحديث")
+                continue
+
             curr_count = counts.get(ticker, 0) + 1
             counts[ticker] = curr_count
 
             lvl = calculate_levels(price, high, low, ema20, ema50)
 
-            stock_lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
-            stock_lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
+            entry_price = card_state.get("entry_price", price)
+            time_str = datetime.now(RIYADH).strftime("%H:%M")
 
-            if row.get('has_abcd'):
-                stock_lines.append(f"📐 <b>نموذج الهارمونيك:</b> AB=CD مكتمل على فاصل الساعة (1H)")
-                stock_lines.append(f"🎯 <b>منطقة الانعكاس PRZ (D):</b> {row['prz_d']:.2f} ر.س | <b>نسبة BC:</b> {row['bc_ratio']:.1f}%")
+            card = build_card(
+                idx, label, header_tag, arabic_name, ticker, curr_count, sector,
+                price, change, volume, vwap, rsi, entry_price,
+                trend_word, liq, row, lvl, tv_url, time_str
+            )
 
-            if 'vol_1h' in row:
-                stock_lines.append(f"⏱️ <b>فوليوم شمعة الساعة:</b> {row['vol_1h']:,} سهم")
+            # --- إرسال البطاقة أول مرة، وبعدها تعديل نفس الرسالة ---
+            msg_id = card_state.get("msg_id")
+            if msg_id:
+                if not edit_message(msg_id, card):
+                    msg_id = send_get_id(card)
+            else:
+                msg_id = send_get_id(card)
 
-            if 'bounce_pct' in row:
-                stock_lines.append(f"📈 <b>ارتداد 15M:</b> +{row['bounce_pct']:.2f}% من القاع اللحظي")
-                stock_lines.append(f"📊 <b>فوليوم 15M:</b> {row['vol_15m']:,} (تسارع {row['vol_ratio']:.1f}x)")
+            cards[card_key] = {
+                "msg_id": msg_id,
+                "entry_price": entry_price,
+                "last_price": price,
+                "last_black_candle": liq["has_black_candle"],
+                "last_diamond": liq["diamond_breakout"],
+                "updates": updates_done + 1,
+            }
 
-            if rsi > 0:
-                stock_lines.append(f"📉 <b>RSI (1H):</b> {rsi:.1f}")
-
-            stock_lines.append(f"🏢 <b>القطاع:</b> {sector}")
-            stock_lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
-            stock_lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
-
-            stock_lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
-            stock_lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
-            if vwap > 0:
-                stock_lines.append(f"📊 <b>VWAP:</b> {vwap:.2f} ر.س")
-            stock_lines.append("-----------------------------------\n")
-
-            blocks.append("\n".join(stock_lines))
-
-        footer = "\nللفرز فقط، تأكد على الشارت قبل أي قرار."
-        send_chunked(header, blocks, footer)
-
-    save_seen(today, counts, now_timestamp)
+    save_seen(today, counts, now_timestamp, cards)
     if had_error:
         sys.exit(1)
 
