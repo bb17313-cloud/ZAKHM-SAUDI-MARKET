@@ -1,54 +1,34 @@
-name: sa-screener-bot
+name: translator-summary-bot
 
 on:
   schedule:
-    # كل 5 دقائق من 10:00 صباحاً وحتى آخر فحص يومي 17:55 بتوقيت السعودية (UTC 07:00 - 14:55)
-    # الأيام: من الأحد (0) إلى الخميس (4) - الجمعة والسبت عطلة
-    - cron: "*/5 7-14 * * 0-4"
+    - cron: "*/30 * * * *"  # تشغيل جديد ينتظر في الطابور ويبدأ فور انتهاء السابق
   workflow_dispatch:
-    inputs:
-      session:
-        description: "Force a session for testing: regular / final_check (leave empty for automatic)"
-        required: false
-        default: ""
-      resend:
-        description: "تجربة: إعادة الإرسال الآن (يتجاوز فاصل 3 دقائق وشرط ارتفاع السعر)"
-        type: boolean
-        required: false
-        default: false
 
 concurrency:
-  group: sa-screener-bot
+  group: translator-summary-bot
   cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install tradingview-screener requests websocket-client
-          pip install --upgrade --no-cache-dir git+https://github.com/rongardF/tvdatafeed.git
-
-      # الاحتفاظ بملف seen_saudi.json بين الجولات لعدم تكرار التنبيهات
-      - name: Restore seen tickers
-        uses: actions/cache@v4
-        with:
-          path: seen_saudi.json
-          key: seen-saudi-${{ github.run_id }}
-          restore-keys: |
-            seen-saudi-
+        run: pip install requests pypdf python-docx yt-dlp
 
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          FORCE_SESSION: ${{ inputs.session || github.event.inputs.session }}
-          FORCE_RESEND: ${{ inputs.resend }}
-        run: python main.py
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RUN_SECONDS: "20400"
+          SEC_USER_AGENT: "MyBot Stockxxx90@gmail.com"
+        run: python bot.py
