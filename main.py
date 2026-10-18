@@ -675,69 +675,44 @@ def build_card(idx, label, header_tag, arabic_name, ticker, curr_count, sector,
 
     # --- الرأس ---
     lines.append(f"🔴 <b>LIVE | #{idx} {arabic_name} ({ticker})</b>{header_tag}")
-    lines.append(f"🚨 <b>[تنبيه {curr_count}]</b> | 🏷 {escape_html(label)}")
-    lines.append(f"🏢 <b>القطاع:</b> {sector}")
+    lines.append(f"🚨 <b>تنبيه {curr_count}</b> | 🏷 {escape_html(label)}")
+    lines.append(f"🏢 {sector}")
     lines.append(sep)
 
     # --- السعر والحركة ---
-    lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}%")
-    if entry_price and entry_price > 0:
+    lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س ({change:+.1f}%)")
+    if entry_price and entry_price > 0 and abs(price - entry_price) > 1e-9:
         since = ((price - entry_price) / entry_price) * 100
-        lines.append(f"↗️ <b>التغير منذ أول تنبيه:</b> {'+' if since >= 0 else ''}{since:.2f}%")
-    lines.append(f"📊 <b>Vol:</b> {int(volume):,}" + (f" | <b>VWAP:</b> {vwap:.2f} ر.س" if vwap > 0 else ""))
-    if rsi > 0:
+        lines.append(f"↗️ <b>منذ أول تنبيه:</b> {since:+.2f}%")
+    lines.append(f"📊 <b>Vol:</b> {int(volume):,}" + (f" | <b>VWAP:</b> {vwap:.2f}" if vwap > 0 else ""))
+    if rsi > 0 and 'rsi_15m' not in row:
         lines.append(f"📉 <b>RSI:</b> {rsi:.1f}")
-    lines.append(f"🧭 <b>الاتجاه (9 شموع / 3د):</b> {trend_word}")
     lines.append(sep)
 
-    # --- السيولة والدايموند ---
-    if not liq["available"]:
-        lines.append("⬛ <b>شمعة السيولة السوداء:</b> غير متاح")
-        lines.append("💎 <b>إشارة دايموند:</b> غير متاح")
-    else:
-        b_high = f"{liq['black_high']:.2f}" if liq["black_high"] > 0 else "—"
-        if liq["has_black_candle"]:
-            lines.append(f"⬛ <b>شمعة السيولة السوداء:</b> تم الرصد (فوليوم {liq['volume_ratio']}x | هاي: {b_high})")
-        else:
-            lines.append("⬛ <b>شمعة السيولة السوداء:</b> قيد المراقبة")
-        if liq["diamond_breakout"]:
-            lines.append(f"💎 <b>إشارة دايموند:</b> ✨ تم الاختراق فوق {b_high}")
-        else:
-            lines.append(f"💎 <b>إشارة دايموند:</b> ⏳ بانتظار اختراق {b_high}")
-    lines.append(sep)
-
-    # --- تفاصيل خاصة بالفلتر (تظهر فقط إن وجدت) ---
-    special = []
-    if 'rsi_prev_15m' in row and not pd.isna(row['rsi_prev_15m']):
-        special.append(
-            f"📉 <b>RSI 15د:</b> {row['rsi_15m']:.1f} (السابقة {row['rsi_prev_15m']:.1f}) | <b>المستوى:</b> {int(row['rsi_level'])}"
-        )
-    if 'sq_black_high' in row and not pd.isna(row['sq_black_high']):
-        special.append(
-            f"⬛ <b>سيولة 15د:</b> شمعة {row['sq_black_ratio']:.1f}x | 💎 تم الاختراق فوق {row['sq_black_high']:.2f}"
-        )
-        special.append(
-            f"🟢 <b>السكويز:</b> انفجر قبل {int(row['sq_fired_bars'])} شمعة | <b>المومنتم:</b> {row['sq_mom']:.2f} ⬆️ (أزرق فاتح)"
-        )
-        special.append(f"📉 <b>أدنى RSI حديث:</b> {row['sq_rsi_low']:.1f}")
+    # --- الإشارات (خاصة بالفلتر ثم السيولة والدايموند) ---
+    sig_start = len(lines)
     if 'post_change_pct' in row and not pd.isna(row['post_change_pct']):
-        special.append(
-            f"🌙 <b>ما بعد الإغلاق:</b> +{row['post_change_pct']:.2f}% عن إغلاق 15:00 ({row['post_ref_close']:.2f} ر.س)"
-        )
-        special.append(f"📊 <b>سيولة ما بعد الإغلاق:</b> {int(row['post_volume']):,} سهم")
-    if special:
-        lines.extend(special)
+        lines.append(f"🌙 <b>بعد الإغلاق:</b> +{row['post_change_pct']:.2f}% عن إغلاق 15:00 ({row['post_ref_close']:.2f})")
+        lines.append(f"📊 <b>سيولة بعد الإغلاق:</b> {int(row['post_volume']):,} سهم")
+    if 'sq_black_high' in row and not pd.isna(row['sq_black_high']):
+        lines.append(f"⬛ <b>سيولة 15د:</b> {row['sq_black_ratio']:.1f}x | 💎 اخترق {row['sq_black_high']:.2f}")
+        lines.append(f"🟢 <b>السكويز:</b> انفجر قبل {int(row['sq_fired_bars'])} شمعة | <b>المومنتم:</b> {row['sq_mom']:.2f} ⬆️")
+        lines.append(f"📉 <b>أدنى RSI حديث:</b> {row['sq_rsi_low']:.1f}")
+
+    if len(lines) > sig_start:
         lines.append(sep)
 
     # --- الأهداف والدعم والوقف ---
-    lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} -&gt; {lvl['t2']:.2f} -&gt; {lvl['t3']:.2f} ر.س")
-    lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
+    lines.append(f"🎯 <b>TP1:</b> {lvl['t1']:.2f} ر.س")
+    lines.append(f"🎯 <b>TP2:</b> {lvl['t2']:.2f} ر.س")
+    lines.append(f"🎯 <b>TP3:</b> {lvl['t3']:.2f} ر.س")
+    lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س")
+    lines.append(f"⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
     lines.append(sep)
 
     # --- التذييل ---
-    lines.append(f"🕒 <b>آخر تحديث:</b> {time_str} (السعودية)")
-    lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
-    lines.append("للفرز فقط، تأكد على الشارت قبل أي قرار.")
+    lines.append(f"🕒 <b>آخر تحديث:</b> {time_str} | 📈 <a href='{tv_url}'>الشارت</a>")
+    lines.append("⚠️ للفرز فقط، تأكد على الشارت قبل أي قرار.")
 
     return "\n".join(lines)
 
