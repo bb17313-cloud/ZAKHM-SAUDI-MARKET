@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 import requests
 from tradingview_screener import Query, col
@@ -35,6 +36,17 @@ RSI_15M_BARS = 60             # عدد شموع 15 دقيقة لحساب RSI
 POST_CLOSE_HOUR = 15          # ساعة الإغلاق (توقيت السعودية)
 POST_MOVE_MIN_PCT = 1.0       # أدنى ارتفاع % عن شمعة إغلاق 15:00
 POST_1M_BARS = 120            # عدد شموع الدقيقة لفحص ما بعد الإغلاق
+
+# --- إعدادات الفلتر القوي المدمج (انعكاس + شمعة سيولة + سكويز) على 15 دقيقة ---
+STRONG_15M_BARS = 80          # عدد شموع 15 دقيقة المجلوبة
+STRONG_RSI_LOW = 40           # RSI لازم يكون نزل إلى هذا المستوى أو أقل مؤخراً
+STRONG_RSI_LOOKBACK = 12      # عدد الشموع للبحث عن قاع RSI
+STRONG_BLACK_LOOKBACK = 8     # عدد الشموع للبحث عن شمعة السيولة السوداء
+STRONG_BLACK_MULT = 1.8       # فوليوم شمعة السيولة >= 1.8x متوسط آخر 20 شمعة
+SQ_LENGTH = 20                # طول السكويز (بولنجر / كلتنر / المومنتم)
+SQ_BB_MULT = 2.0              # مضاعف البولنجر
+SQ_KC_MULT = 1.5              # مضاعف كلتنر
+SQ_FIRE_LOOKBACK = 5          # انفجار السكويز خلال آخر N شموع
 
 # --- إعدادات بطاقة LIVE (شمعة السيولة السوداء + الدايموند) ---
 LIVE_1M_BARS = 60             # عدد شموع الدقيقة المستخدمة في التحليل
@@ -109,12 +121,21 @@ def screens():
         col("RSI|15") <= 75,
     ]
 
+    # فلترة أولية بـ RSI|15 فقط لتقليل عدد الأسهم المفحوصة تاريخياً
+    strong_candidates = [
+        col("close") > 0,
+        col("volume") >= MIN_VOLUME,
+        col("RSI|15") >= STRONG_RSI_LOW,
+        col("RSI|15") <= 80,
+    ]
+
     extra = ["close", "change", "volume"]
     return extra, "change", {
         "1️⃣ انطلاق من الافتتاح (+0.5% وسيولة 20K)": open_move,
         "🌙 2️⃣ ما بعد الإغلاق (+1% عن إغلاق 15:00)": post_close_candidates,
         "🔄 3️⃣ انعكاس RSI من 30/40 (15 دقيقة)": rsi_bounce_candidates,
         "⚡ 4️⃣ زخم RSI فوق 60 (15 دقيقة)": rsi_momentum_candidates,
+        "💎 5️⃣ قوي: انعكاس + سيولة + سكويز (15 دقيقة)": strong_candidates,
     }
 
 
@@ -232,6 +253,129 @@ def check_post_close_signal(ticker):
         return False, None
     except Exception as e:
         print(f"خطأ في فحص ما بعد الإغلاق للسهم {ticker}: {e}")
+        return False, None
+
+
+def _linreg_last(y):
+    """قيمة خط الانحدار الخطي عند آخر نقطة في النافذة (مثل linreg في Pine)"""
+    x = np.arange(len(y))
+    slope, intercept = np.polyfit(x, y, 1)
+    return intercept + slope * (len(y) - 1)
+
+
+def calc_squeeze(df):
+    """
+    السكويز (TTM): نقطة سوداء = البولنجر داخل كلتنر، وإلا نقطة خضراء.
+    المومنتم: linreg لـ (الإغلاق - متوسط منتصف النطاق والمتوسط).
+    """
+    close, high, low = df['close'], df['high'], df['low']
+
+    basis = close.rolling(SQ_LENGTH).mean()
+    dev = SQ_BB_MULT * close.rolling(SQ_LENGTH).std(ddof=0)
+    upper_bb, lower_bb = basis + dev, basis - dev
+
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    range_ma = tr.rolling(SQ_LENGTH).mean()
+    upper_kc = basis + SQ_KC_MULT * range_ma
+    lower_kc = basis - SQ_KC_MULT * range_ma
+
+    sqz_on = (lower_bb > lower_kc) & (upper_bb < upper_kc)
+
+    mid = ((high.rolling(SQ_LENGTH).max() + low.rolling(SQ_LENGTH).min()) / 2 + basis) / 2
+    mom = (close - mid).rolling(SQ_LENGTH).apply(_linreg_last, raw=True)
+
+    return sqz_on, mom
+
+
+def check_strong_combo_15m(ticker):
+    """
+    الفلتر القوي المدمج (فاصل 15 دقيقة فقط):
+    1) انعكاس: RSI نزل إلى 40 أو أقل خلال آخر 12 شمعة وهو الآن صاعد.
+    2) شمعة سيولة سوداء: شمعة خضراء فوليومها >= 1.8x متوسط 20 شمعة (وفوليوم >= MIN_VOLUME) خلال آخر 8 شموع.
+    3) دايموند: السعر الحالي أغلق فوق هاي شمعة السيولة.
+    4) سكويز: انفجر (أسود -> أخضر) خلال آخر 5 شموع، والمومنتم موجب وصاعد (أزرق فاتح).
+    تُستخدم آخر شمعة مكتملة فقط أثناء الجلسة.
+    """
+    if tv is None:
+        return False, None
+
+    try:
+        df = tv.get_hist(symbol=ticker, exchange='TADAWUL', interval=Interval.in_15_minute, n_bars=STRONG_15M_BARS)
+        if df is None or df.empty or len(df) < 50:
+            return False, None
+
+        # أثناء الجلسة الشمعة الأخيرة غير مكتملة، نحذفها
+        if 10 <= datetime.now(RIYADH).hour < POST_CLOSE_HOUR:
+            df = df.iloc[:-1]
+        n = len(df)
+        if n < 50:
+            return False, None
+
+        df['rsi'] = calculate_rsi(df['close'], 14)
+        rsi_now = df['rsi'].iloc[-1]
+        rsi_prev = df['rsi'].iloc[-2]
+        if pd.isna(rsi_now) or pd.isna(rsi_prev):
+            return False, None
+
+        # 1) الانعكاس
+        rsi_low = df['rsi'].iloc[-STRONG_RSI_LOOKBACK:].min()
+        if not (rsi_low <= STRONG_RSI_LOW and rsi_now > rsi_prev):
+            return False, None
+
+        # 2) + 3) شمعة السيولة السوداء والدايموند
+        highs = df['high'].tolist()
+        opens = df['open'].tolist()
+        closes = df['close'].tolist()
+        volumes = df['volume'].tolist()
+
+        black_high = None
+        black_ratio = 0.0
+        for i in range(n - STRONG_BLACK_LOOKBACK, n):
+            vol_slice = [v for v in volumes[max(0, i - LIQ_LOOKBACK):i] if v is not None and v > 0]
+            if not vol_slice:
+                continue
+            avg_vol = sum(vol_slice) / len(vol_slice)
+            curr_vol = volumes[i] or 0.0
+            if avg_vol > 0 and curr_vol >= avg_vol * STRONG_BLACK_MULT and curr_vol >= MIN_VOLUME and closes[i] > opens[i]:
+                black_high = float(highs[i])
+                black_ratio = curr_vol / avg_vol
+
+        if black_high is None:
+            return False, None
+
+        price = float(closes[-1])
+        if price <= black_high:
+            return False, None
+
+        # 4) السكويز والمومنتم
+        sqz_on, mom = calc_squeeze(df)
+        mom_now = mom.iloc[-1]
+        mom_prev = mom.iloc[-2]
+        if pd.isna(mom_now) or pd.isna(mom_prev):
+            return False, None
+        if bool(sqz_on.iloc[-1]):
+            return False, None
+        if not (mom_now > 0 and mom_now > mom_prev):
+            return False, None
+
+        fired_bars_ago = None
+        for j in range(n - SQ_FIRE_LOOKBACK, n):
+            if bool(sqz_on.iloc[j - 1]) and not bool(sqz_on.iloc[j]):
+                fired_bars_ago = n - 1 - j
+        if fired_bars_ago is None:
+            return False, None
+
+        return True, {
+            "rsi_15m": float(rsi_now),
+            "sq_rsi_low": float(rsi_low),
+            "sq_black_high": black_high,
+            "sq_black_ratio": float(black_ratio),
+            "sq_mom": float(mom_now),
+            "sq_fired_bars": int(fired_bars_ago),
+        }
+    except Exception as e:
+        print(f"خطأ في فحص الفلتر القوي المدمج للسهم {ticker}: {e}")
         return False, None
 
 
@@ -557,10 +701,18 @@ def build_card(idx, label, header_tag, arabic_name, ticker, curr_count, sector,
 
     # --- تفاصيل خاصة بالفلتر (تظهر فقط إن وجدت) ---
     special = []
-    if 'rsi_15m' in row and not pd.isna(row['rsi_15m']):
+    if 'rsi_prev_15m' in row and not pd.isna(row['rsi_prev_15m']):
         special.append(
             f"📉 <b>RSI 15د:</b> {row['rsi_15m']:.1f} (السابقة {row['rsi_prev_15m']:.1f}) | <b>المستوى:</b> {int(row['rsi_level'])}"
         )
+    if 'sq_black_high' in row and not pd.isna(row['sq_black_high']):
+        special.append(
+            f"⬛ <b>سيولة 15د:</b> شمعة {row['sq_black_ratio']:.1f}x | 💎 تم الاختراق فوق {row['sq_black_high']:.2f}"
+        )
+        special.append(
+            f"🟢 <b>السكويز:</b> انفجر قبل {int(row['sq_fired_bars'])} شمعة | <b>المومنتم:</b> {row['sq_mom']:.2f} ⬆️ (أزرق فاتح)"
+        )
+        special.append(f"📉 <b>أدنى RSI حديث:</b> {row['sq_rsi_low']:.1f}")
     if 'post_change_pct' in row and not pd.isna(row['post_change_pct']):
         special.append(
             f"🌙 <b>ما بعد الإغلاق:</b> +{row['post_change_pct']:.2f}% عن إغلاق 15:00 ({row['post_ref_close']:.2f} ر.س)"
@@ -660,6 +812,19 @@ def main():
                     if is_valid:
                         row_dict = row.to_dict()
                         row_dict.update(rsi_info)
+                        valid_rows.append(row_dict)
+                df = pd.DataFrame(valid_rows)
+            else:
+                df = pd.DataFrame()
+        elif "قوي" in label:
+            if tv is not None:
+                valid_rows = []
+                for _, row in df.iterrows():
+                    ticker_name = str(row.get('clean_name', row['name'])).strip()
+                    is_valid, strong_info = check_strong_combo_15m(ticker_name)
+                    if is_valid:
+                        row_dict = row.to_dict()
+                        row_dict.update(strong_info)
                         valid_rows.append(row_dict)
                 df = pd.DataFrame(valid_rows)
             else:
