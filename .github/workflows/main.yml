@@ -2,9 +2,9 @@ name: sa-screener-bot
 
 on:
   schedule:
-    # كل 5 دقائق من 10:00 صباحاً (UTC 07:00) وحتى 16:55 بتوقيت السعودية (UTC 12:55)
+    # كل 5 دقائق من 10:00 صباحاً حتى 15:55 بتوقيت السعودية (UTC 07:00 - 12:55)
     - cron: "*/5 7-12 * * 0-4"
-    # آخر فحص يومي 16:35 بتوقيت السعودية (UTC 13:35)
+    # من 16:00 حتى آخر فحص يومي 16:35 بتوقيت السعودية (UTC 13:00 - 13:35)
     # الأيام: من الأحد (0) إلى الخميس (4) - الجمعة والسبت عطلة
     - cron: "0-35/5 13 * * 0-4"
   workflow_dispatch:
@@ -13,6 +13,11 @@ on:
         description: "Force a session for testing: regular / final_check (leave empty for automatic)"
         required: false
         default: ""
+      resend:
+        description: "تجربة: إعادة الإرسال الآن (يتجاوز فاصل 3 دقائق وشرط ارتفاع السعر)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: sa-screener-bot
@@ -47,4 +52,5 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           FORCE_SESSION: ${{ inputs.session || github.event.inputs.session }}
+          FORCE_RESEND: ${{ inputs.resend }}
         run: python main.py
