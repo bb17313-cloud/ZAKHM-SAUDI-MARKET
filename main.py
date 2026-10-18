@@ -12,9 +12,13 @@ from tradingview_screener import Query, col
 
 # استيراد TvDatafeed لحساب التاريخي (RSI 15 دقيقة + ما بعد الإغلاق)
 try:
-    from tvdatafeed import TvDatafeed, Interval
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+    except ImportError:
+        from tvdatafeed import TvDatafeed, Interval
     tv = TvDatafeed()
-except ImportError:
+except ImportError as e:
+    print(f"⚠️ tvdatafeed غير متاح، الفلاتر التاريخية معطلة: {e}")
     tv = None
 
 # إعدادات التلغرام من متغيرات البيئة
@@ -23,6 +27,9 @@ CHAT_ID = os.environ.get("CHAT_ID", "")
 
 RIYADH = ZoneInfo("Asia/Riyadh")
 SEEN_FILE = "seen_saudi.json"
+
+# تشغيل يدوي للتجربة: يتجاوز فاصل 3 دقائق وشرط ارتفاع السعر ويرسل رسائل جديدة
+FORCE_RESEND = os.environ.get("FORCE_RESEND", "").strip().lower() == "true"
 
 MAX_SHOWN = 10  # الحد الأقصى للأسهم المعروضة في الرسالة الواحدة
 CHECK_INTERVAL_SECONDS = 180  # الفحص كل 3 دقائق (180 ثانية)
@@ -742,7 +749,7 @@ def main():
     elapsed = now_timestamp - last_run_timestamp
 
     # التحقق من الفارق الزمني بشرط ألا يكون وقت التشغيل السابق قادماً من يوم قديم غير مصفر
-    if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
+    if not FORCE_RESEND and last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
         print(f"⏳ لم تمضِ 3 دقائق بعد منذ آخر فحص. المتبقي: {remaining} ثانية.")
         return
@@ -872,7 +879,7 @@ def main():
             last_price = card_state.get("last_price", price)
             price_increased = price > last_price
 
-            if card_state and not price_increased:
+            if card_state and not price_increased and not FORCE_RESEND:
                 print(f"ℹ️ {ticker} ({label}) لم يرتفع عن آخر تنبيه — تخطي التحديث")
                 continue
 
@@ -892,7 +899,7 @@ def main():
 
             # --- إرسال البطاقة أول مرة، وبعدها تعديل نفس الرسالة ---
             msg_id = card_state.get("msg_id")
-            if msg_id:
+            if msg_id and not FORCE_RESEND:
                 if not edit_message(msg_id, card):
                     msg_id = send_get_id(card)
             else:
