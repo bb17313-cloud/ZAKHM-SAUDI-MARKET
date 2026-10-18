@@ -2,9 +2,11 @@ name: sa-screener-bot
 
 on:
   schedule:
-    # تشغيل كل 5 دقائق من الساعة 10:00 صباحاً وحتى 15:35 عصراً بتوقيت السعودية (UTC 07:00 إلى 12:35)
-    # الأيام: من الأحد (0) إلى الخميس (4) - الجمعة والسبت عطلة
+    # كل 5 دقائق من 10:00 صباحاً (UTC 07:00) وحتى 16:55 بتوقيت السعودية (UTC 12:55)
     - cron: "*/5 7-12 * * 0-4"
+    # آخر فحص يومي 16:35 بتوقيت السعودية (UTC 13:35)
+    # الأيام: من الأحد (0) إلى الخميس (4) - الجمعة والسبت عطلة
+    - cron: "0-35/5 13 * * 0-4"
   workflow_dispatch:
     inputs:
       session:
@@ -27,7 +29,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install tradingview-screener requests
+        run: |
+          pip install tradingview-screener requests websocket-client
+          pip install --upgrade --no-cache-dir git+https://github.com/rongardF/tvdatafeed.git
 
       # الاحتفاظ بملف seen_saudi.json بين الجولات لعدم تكرار التنبيهات
       - name: Restore seen tickers
