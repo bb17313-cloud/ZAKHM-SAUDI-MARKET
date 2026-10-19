@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,7 @@ MIN_DAILY_CHANGE = 0.75
 MIN_VOLUME = 15_000
 MIN_AVG_VOLUME_10D = 50_000
 MIN_RELATIVE_VOLUME = 1.0
+NEWS_CACHE = {}
 
 def get_saudi_stocks_dict():
     """قائمة الأسهم السعودية المحدثة"""
@@ -164,6 +166,60 @@ def escape_html(value) -> str:
     )
 
 
+def fetch_live_news(ticker, company_name):
+    """البحث الحي عن أخبار السهم في تداول السعودية وأرقام ومعلومات مباشر فقط."""
+    cache_key = (str(ticker), str(company_name))
+    if cache_key in NEWS_CACHE:
+        return NEWS_CACHE[cache_key]
+
+    query = (
+        f'("{ticker}" OR "{company_name}") '
+        '(site:saudiexchange.sa OR site:argaam.com OR site:mubasher.info)'
+    )
+    try:
+        response = requests.get(
+            "https://news.google.com/rss/search",
+            params={"q": query, "hl": "ar", "gl": "SA", "ceid": "SA:ar"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        allowed = ("saudiexchange.sa", "argaam.com", "mubasher.info")
+        results = []
+        seen = set()
+        for item in root.findall("./channel/item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            date = (item.findtext("pubDate") or "").strip()
+            source_el = item.find("source")
+            source = (source_el.text or "").strip() if source_el is not None else ""
+            if not title or not link:
+                continue
+            try:
+                final_link = requests.get(
+                    link, headers={"User-Agent": "Mozilla/5.0"},
+                    allow_redirects=True, timeout=8
+                ).url
+            except Exception:
+                final_link = link
+            if not any(domain in final_link.lower() for domain in allowed):
+                continue
+            key = (title, final_link)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append((title, final_link, date, source))
+            if len(results) >= 3:
+                break
+        NEWS_CACHE[cache_key] = results
+        return results
+    except Exception as e:
+        print(f"تعذر جلب أخبار {ticker}: {e}")
+        NEWS_CACHE[cache_key] = []
+        return []
+
+
 def send_chunked(header, blocks, footer=""):
     MAX_LEN = 3800
     chunks = []
@@ -268,7 +324,7 @@ def main():
 
         print(f"[السوق السعودي/{label}] {len(results)} matches")
 
-        header = f"🚨 <b>تحديث الزخم والأسهم | {label}</b>"
+        header = f"🚨 تحديث الزخم والأسهم | {label}"
         blocks = []
 
         for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
@@ -283,27 +339,31 @@ def main():
             volume = float(row[vol_c]) if row[vol_c] else 0.0
             high = float(row['high']) if 'high' in row and row['high'] else price * 1.02
             low = float(row['low']) if 'low' in row and row['low'] else price * 0.98
-            curr_count = counts.get(ticker, 0) + 1
-            counts[ticker] = curr_count
-
             lvl = calculate_levels(price, high, low)
 
-            stock_lines.append(f"🔥 <b>دخول جديد إلى القائمة – #{idx} {arabic_name} ({ticker})</b>")
-            stock_lines.append(f"🚨 🛑 <b>[تنبيه {curr_count}]</b>")
+            stock_lines.append(f"🔥 {arabic_name} ({ticker})")
+            stock_lines.append(f"🏢 القطاع: {sector}")
+            stock_lines.append(f"💵 السعر: {price:.2f} ر.س | التغير: +{change:.1f}% | Vol: {int(volume):,}")
 
-            stock_lines.append(f"🏢 <b>القطاع:</b> {sector}")
-            stock_lines.append(f"💵 <b>السعر:</b> {price:.2f} ر.س | <b>التغير:</b> +{change:.1f}% | Vol: {int(volume):,}")
-            stock_lines.append(f"📈 <b>الشارت:</b> <a href='{tv_url}'>TradingView</a>")
-            stock_lines.append("📰 <b>الأخبار والمحفزات:</b> تُراجع عند وجود إعلان أو خبر مؤثر")
-            stock_lines.append("🔗 <a href='https://www.saudiexchange.sa/'>تداول السعودية</a> | <a href='https://www.argaam.com/'>أرقام</a> | <a href='https://www.mubasher.info/countries/sa'>معلومات مباشر</a> | <a href='https://sa.investing.com/markets/saudi-arabia'>Investing السعودية</a>")
+            news = fetch_live_news(ticker, stocks_dict.get(ticker, ticker))
+            if news:
+                stock_lines.append("📰 الأخبار والمحفزات:")
+                for title, link, date, source in news:
+                    date_text = f" — {date}" if date else ""
+                    source_text = f" ({source})" if source else ""
+                    stock_lines.append(
+                        f"• <a href='{escape_html(link)}'>{escape_html(title)}</a>"
+                        f"{escape_html(source_text)}{escape_html(date_text)}"
+                    )
 
-            stock_lines.append(f"🎯 <b>الأهداف:</b> {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
-            stock_lines.append(f"🛡️ <b>الدعم:</b> {lvl['support_intraday']:.2f} ر.س | ⛔️ <b>الوقف:</b> {lvl['stop_1']:.2f} ر.س")
+            stock_lines.append(f"🎯 الأهداف: {lvl['t1']:.2f} ر.س -&gt; {lvl['t2']:.2f} ر.س -&gt; {lvl['t3']:.2f} ر.س")
+            stock_lines.append(f"🛡️ الدعم: {lvl['support_intraday']:.2f} ر.س | ⛔️ الوقف: {lvl['stop_1']:.2f} ر.س")
+            stock_lines.append(f"<a href='{tv_url}'>TradingView</a>")
             stock_lines.append("-----------------------------------\n")
 
             blocks.append("\n".join(stock_lines))
 
-        footer = "\nللفرز فقط، تأكد على الشارت قبل أي قرار."
+        footer = "\nللفرز فقط، تأكد من البيانات قبل أي قرار."
         send_chunked(header, blocks, footer)
 
     save_seen(today, counts, now_timestamp)
