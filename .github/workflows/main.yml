@@ -2,7 +2,8 @@ name: translator-summary-bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # تشغيل جديد ينتظر في الطابور ويبدأ فور انتهاء السابق
+    # تشغيل كل 5 دقائق؛ الكود يفرض نافذة 09:45–16:30 بتوقيت الرياض
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -21,14 +22,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests pypdf python-docx yt-dlp
+        run: pip install requests tradingview-screener
 
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          RUN_SECONDS: "20400"
-          SEC_USER_AGENT: "MyBot Stockxxx90@gmail.com"
-        run: python bot.py
+        run: python main.py
