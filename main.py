@@ -16,14 +16,16 @@ CHAT_ID = os.environ.get("CHAT_ID", "")
 RIYADH = ZoneInfo("Asia/Riyadh")
 SEEN_FILE = "seen_saudi.json"
 
-MAX_SHOWN = 10  # الحد الأقصى للأسهم المعروضة في الرسالة الواحدة
-CHECK_INTERVAL_SECONDS = 300  # الفحص كل 5 دقائق
-SCAN_START_MINUTES = 9 * 60 + 45   # 09:45 بتوقيت الرياض
-SCAN_END_MINUTES = 16 * 60 + 30    # 16:30 بتوقيت الرياض
-MIN_DAILY_CHANGE = 0.75
-MIN_VOLUME = 15_000
-MIN_AVG_VOLUME_10D = 50_000
-MIN_RELATIVE_VOLUME = 1.0
+MAX_SHOWN = 10
+CHECK_INTERVAL_SECONDS = 300
+SCAN_START_MINUTES = 9 * 60 + 45
+SCAN_END_MINUTES = 16 * 60 + 30
+
+# === فلاتر مخففة لتناسب السوق السعودي ===
+MIN_DAILY_CHANGE = 0.5
+MIN_VOLUME = 5_000
+MIN_AVG_VOLUME_10D = 10_000
+MIN_RELATIVE_VOLUME = 0.5
 NEWS_CACHE = {}
 
 def get_saudi_stocks_dict():
@@ -34,6 +36,7 @@ def get_saudi_stocks_dict():
         "1201": "تكوين", "1202": "ميكو", "1210": "بي سي آي", "1211": "معادن", 
         "1301": "أسلاك", "1304": "اليمامة للحديد", "1320": "أنابيب السعودية", 
         "1321": "أنابيب الشرق", "1322": "أماك", "1323": "يو سي آي سي", "1324": "صالح الراشد",
+        "1325": "حديد وطني",  # ← تمت الإضافة
         "2001": "كيمانول", "2010": "سابك", "2020": "سابك للمغذيات الزراعية", "2060": "التصنيع",
         "2090": "جيسكو", "2150": "زجاج", "2170": "اللجين", "2180": "فيبكو", "2200": "أنابيب",
         "2210": "نماء للكيماويات", "2220": "معدنية", "2223": "لوبريف", "2240": "صناعات",
@@ -66,7 +69,7 @@ def get_saudi_stocks_dict():
 
 
 def screens():
-    """فلاتر الزخم العامة بعد حذف الفلاتر الخاصة بالسوق السعودي."""
+    """فلاتر الزخم العامة بعد تخفيفها لتناسب السوق السعودي."""
     common_momentum = [
         col("close") > 0,
         col("change") >= MIN_DAILY_CHANGE,
@@ -74,22 +77,22 @@ def screens():
         col("average_volume_10d_calc") >= MIN_AVG_VOLUME_10D,
         col("relative_volume_10d_calc") >= MIN_RELATIVE_VOLUME,
     ]
-    early_momentum = common_momentum + [col("change") <= 2.5]
-    intraday_momentum = common_momentum + [col("change") <= 6.0]
+    early_momentum = common_momentum + [col("change") <= 3.0]
+    intraday_momentum = common_momentum + [col("change") <= 7.0]
     strong_momentum = common_momentum
     extra = ["close", "change", "volume"]
     return extra, "change", {
-        "1️⃣ زخم مبكر (0.75% - 2.5%)": early_momentum,
-        "2️⃣ زخم لحظي (0.75% - 6.0%)": intraday_momentum,
-        "3️⃣ زخم قوي (0.75% فأعلى)": strong_momentum,
+        "1️⃣ زخم مبكر (0.5% - 3.0%)": early_momentum,
+        "2️⃣ زخم لحظي (0.5% - 7.0%)": intraday_momentum,
+        "3️⃣ زخم قوي (0.5% فأعلى)": strong_momentum,
     }
 
-def run_screen(filters, columns, sort_col, tickers_dict):
-    symbols = [f"TADAWUL:{t}" for t in tickers_dict.keys()]
 
+def run_screen(filters, columns, sort_col, tickers_dict=None):
+    """يستخدم السوق السعودي كاملاً بدل قائمة محدودة"""
     query = (
         Query()
-        .set_tickers(*symbols)
+        .set_markets("saudi")
         .select(*columns)
         .where(*filters)
         .order_by(sort_col, ascending=False)
@@ -110,12 +113,10 @@ def run_screen(filters, columns, sort_col, tickers_dict):
 
 
 def load_seen():
-    """تحميل سجل التنبيهات ووقت آخر فحص مع إعادة الضبط التلقائي للأيام الجديدة"""
     today = datetime.now(RIYADH).strftime("%Y-%m-%d")
     try:
         with open(SEEN_FILE) as f:
             data = json.load(f)
-        # التحقق هل التاريخ المخزن يطابق تاريخ اليوم الحالي
         if data.get("date") == today:
             counts = data.get("counts", {})
             last_run_timestamp = data.get("last_run_timestamp", 0)
@@ -167,7 +168,6 @@ def escape_html(value) -> str:
 
 
 def fetch_live_news(ticker, company_name):
-    """البحث الحي عن أخبار السهم في تداول السعودية وأرقام ومعلومات مباشر فقط."""
     cache_key = (str(ticker), str(company_name))
     if cache_key in NEWS_CACHE:
         return NEWS_CACHE[cache_key]
@@ -271,7 +271,6 @@ def calculate_levels(price, high, low):
 def main():
     now_riyadh = datetime.now(RIYADH)
     minutes_now = now_riyadh.hour * 60 + now_riyadh.minute
-    # الأحد إلى الخميس فقط؛ Python weekday: الجمعة=4 والسبت=5.
     if now_riyadh.weekday() in (4, 5) or not (SCAN_START_MINUTES <= minutes_now <= SCAN_END_MINUTES):
         print(f"⏸️ خارج نافذة الفحص السعودية: {now_riyadh:%Y-%m-%d %H:%M:%S} بتوقيت الرياض")
         return
@@ -281,7 +280,6 @@ def main():
 
     elapsed = now_timestamp - last_run_timestamp
 
-    # التحقق من الفارق الزمني بشرط ألا يكون وقت التشغيل السابق قادماً من يوم قديم غير مصفر
     if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
         print(f"⏳ لم تمضِ 5 دقائق بعد منذ آخر فحص. المتبقي: {remaining} ثانية.")
@@ -302,18 +300,13 @@ def main():
 
     for label, filters in defs.items():
         try:
-            df = run_screen(filters, columns, sort_col, stocks_dict)
+            df = run_screen(filters, columns, sort_col)
         except Exception as e:
             print(f"[السوق السعودي/{label}] error: {e}")
             had_error = True
             continue
 
         if df is None or df.empty:
-            print(f"[السوق السعودي/{label}] 0 matches")
-            continue
-
-
-        if df.empty:
             print(f"[السوق السعودي/{label}] 0 matches")
             continue
 
