@@ -292,12 +292,16 @@ def main():
     stocks_dict = get_saudi_stocks_dict()
 
     tech_cols = [
-        "high", "low", "sector", "average_volume_10d_calc", "relative_volume_10d_calc"
+        "high", "low", "sector", "description",
+        "average_volume_10d_calc", "relative_volume_10d_calc"
     ]
 
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
     had_error = False
+
+    # لمنع تكرار نفس السهم عبر الفلاتر الثلاثة
+    already_sent = set()
 
     for label, filters in defs.items():
         try:
@@ -314,16 +318,27 @@ def main():
         results = []
         for _, row in df.iterrows():
             ticker_name = str(row.get('clean_name', row['name'])).strip()
+            if ticker_name in already_sent:
+                continue
             results.append((ticker_name, row))
+            already_sent.add(ticker_name)
 
-        print(f"[السوق السعودي/{label}] {len(results)} matches")
+        print(f"[السوق السعودي/{label}] {len(results)} matches (بعد إزالة المكرر)")
+
+        if not results:
+            continue
 
         header = f"🚨 تحديث الزخم والأسهم | {label}"
         blocks = []
 
         for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
             stock_lines = []
-            arabic_name = escape_html(stocks_dict.get(ticker, ticker))
+
+            # اسم الشركة: يفضّل القاموس العربي → description من TradingView → الرمز
+            tv_desc = str(row.get("description", "") or "").strip()
+            arabic_name = stocks_dict.get(ticker) or tv_desc or ticker
+            arabic_name = escape_html(arabic_name)
+
             sector = escape_html(str(row.get('sector', 'N/A')).strip())
 
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
