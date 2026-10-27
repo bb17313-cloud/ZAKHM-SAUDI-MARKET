@@ -17,9 +17,12 @@ RIYADH = ZoneInfo("Asia/Riyadh")
 SEEN_FILE = "seen_saudi.json"
 
 MAX_SHOWN = 10
-CHECK_INTERVAL_SECONDS = 300
-SCAN_START_MINUTES = 9 * 60 + 45
-SCAN_END_MINUTES = 16 * 60 + 30
+CHECK_INTERVAL_SECONDS = 300          # 5 دقائق
+SCAN_START_MINUTES = 10 * 60          # 10:00 صباحاً
+SCAN_END_MINUTES = 16 * 60            # 16:00
+
+# الحد الأدنى لزيادة التغير حتى يُعاد إرسال السهم
+MIN_CHANGE_INCREASE = 0.5
 
 # فلاتر مخففة لتناسب السوق السعودي
 MIN_DAILY_CHANGE = 0.5
@@ -119,24 +122,22 @@ def load_seen():
         with open(SEEN_FILE) as f:
             data = json.load(f)
         if data.get("date") == today:
-            counts = data.get("counts", {})
-            last_run_timestamp = data.get("last_run_timestamp", 0)
-            return today, counts, last_run_timestamp
+            return today, data.get("alerted", {}), data.get("last_run_timestamp", 0)
         else:
-            print("📅 تاريخ جديد للسوق، جاري إعادة ضبط سجل التنبيهات والوقت لتجنب التعليق...")
+            print("📅 تاريخ جديد للسوق، جاري إعادة ضبط سجل التنبيهات...")
             return today, {}, 0
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     return today, {}, 0
 
 
-def save_seen(today, counts, last_run_timestamp):
+def save_seen(today, alerted, last_run_timestamp):
     with open(SEEN_FILE, "w") as f:
         json.dump({
             "date": today,
-            "counts": counts,
+            "alerted": alerted,
             "last_run_timestamp": last_run_timestamp
-        }, f, indent=2)
+        }, f, indent=2, ensure_ascii=False)
 
 
 def send(text):
@@ -269,24 +270,39 @@ def calculate_levels(price, high, low):
     }
 
 
-def main():
+def should_alert(ticker, current_change, alerted):
+    """يقرر هل يرسل تنبيه لهذا السهم أم لا"""
+    if ticker not in alerted:
+        return True  # سهم جديد اليوم
+
+    last_change = alerted[ticker].get("change", 0)
+    # يعيد الإرسال فقط إذا زاد التغير بنسبة ملحوظة
+    if current_change >= last_change + MIN_CHANGE_INCREASE:
+        return True
+
+    return False
+
+
+def run_once():
+    """تنفيذ فحص واحد فقط"""
     now_riyadh = datetime.now(RIYADH)
     minutes_now = now_riyadh.hour * 60 + now_riyadh.minute
+
+    # خارج أوقات التداول أو نهاية الأسبوع
     if now_riyadh.weekday() in (4, 5) or not (SCAN_START_MINUTES <= minutes_now <= SCAN_END_MINUTES):
-        print(f"⏸️ خارج نافذة الفحص السعودية: {now_riyadh:%Y-%m-%d %H:%M:%S} بتوقيت الرياض")
-        return
+        print(f"⏸️ خارج نافذة الفحص: {now_riyadh:%Y-%m-%d %H:%M:%S} بتوقيت الرياض")
+        return False
 
-    today, counts, last_run_timestamp = load_seen()
+    today, alerted, last_run_timestamp = load_seen()
     now_timestamp = time.time()
-
     elapsed = now_timestamp - last_run_timestamp
 
     if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
-        print(f"⏳ لم تمضِ 5 دقائق بعد منذ آخر فحص. المتبقي: {remaining} ثانية.")
-        return
+        print(f"⏳ لم تمضِ 5 دقائق بعد. المتبقي: {remaining} ثانية.")
+        return True
 
-    print(f"🚀 جاري تنفيذ الفحص الشامل لجميع الأسهم والفلاتر...")
+    print(f"🚀 جاري تنفيذ الفحص... ({now_riyadh:%H:%M:%S})")
 
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
@@ -298,17 +314,14 @@ def main():
 
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
-    had_error = False
-
-    # لمنع تكرار نفس السهم عبر الفلاتر الثلاثة
-    already_sent = set()
+    already_sent_this_run = set()
+    new_alerts_count = 0
 
     for label, filters in defs.items():
         try:
             df = run_screen(filters, columns, sort_col)
         except Exception as e:
             print(f"[السوق السعودي/{label}] error: {e}")
-            had_error = True
             continue
 
         if df is None or df.empty:
@@ -318,12 +331,19 @@ def main():
         results = []
         for _, row in df.iterrows():
             ticker_name = str(row.get('clean_name', row['name'])).strip()
-            if ticker_name in already_sent:
+            if ticker_name in already_sent_this_run:
                 continue
-            results.append((ticker_name, row))
-            already_sent.add(ticker_name)
 
-        print(f"[السوق السعودي/{label}] {len(results)} matches (بعد إزالة المكرر)")
+            current_change = float(row[chg_c]) if row[chg_c] else 0.0
+
+            # شرط عدم التكرار إلا عند وجود تغير
+            if not should_alert(ticker_name, current_change, alerted):
+                continue
+
+            results.append((ticker_name, row, current_change))
+            already_sent_this_run.add(ticker_name)
+
+        print(f"[السوق السعودي/{label}] {len(results)} matches (بعد فلتر التكرار)")
 
         if not results:
             continue
@@ -331,20 +351,17 @@ def main():
         header = f"🚨 تحديث الزخم والأسهم | {label}"
         blocks = []
 
-        for idx, (ticker, row) in enumerate(results[:MAX_SHOWN], 1):
+        for idx, (ticker, row, current_change) in enumerate(results[:MAX_SHOWN], 1):
             stock_lines = []
 
-            # اسم الشركة: يفضّل القاموس العربي → description من TradingView → الرمز
             tv_desc = str(row.get("description", "") or "").strip()
             arabic_name = stocks_dict.get(ticker) or tv_desc or ticker
             arabic_name = escape_html(arabic_name)
 
             sector = escape_html(str(row.get('sector', 'N/A')).strip())
-
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
             price = float(row[price_c]) if row[price_c] else 0.0
-            change = float(row[chg_c]) if row[chg_c] else 0.0
             volume = float(row[vol_c]) if row[vol_c] else 0.0
             high = float(row['high']) if 'high' in row and row['high'] else price * 1.02
             low = float(row['low']) if 'low' in row and row['low'] else price * 0.98
@@ -352,7 +369,7 @@ def main():
 
             stock_lines.append(f"🔥 {arabic_name} ({ticker})")
             stock_lines.append(f"🏢 القطاع: {sector}")
-            stock_lines.append(f"💵 السعر: {price:.2f} ر.س | التغير: +{change:.1f}% | Vol: {int(volume):,}")
+            stock_lines.append(f"💵 السعر: {price:.2f} ر.س | التغير: +{current_change:.1f}% | Vol: {int(volume):,}")
 
             news = fetch_live_news(ticker, stocks_dict.get(ticker, ticker))
             if news:
@@ -372,12 +389,45 @@ def main():
 
             blocks.append("\n".join(stock_lines))
 
+            # تحديث سجل التنبيه
+            alerted[ticker] = {
+                "change": current_change,
+                "price": price,
+                "time": now_riyadh.strftime("%H:%M")
+            }
+            new_alerts_count += 1
+
         footer = "\nللفرز فقط، تأكد من البيانات قبل أي قرار."
         send_chunked(header, blocks, footer)
 
-    save_seen(today, counts, now_timestamp)
-    if had_error:
-        sys.exit(1)
+    save_seen(today, alerted, now_timestamp)
+    print(f"✅ انتهى الفحص | تنبيهات جديدة: {new_alerts_count}")
+    return True
+
+
+def main():
+    print("🟢 بدء تشغيل مراقب الزخم السعودي")
+    print(f"⏰ أوقات العمل: 10:00 → 16:00 | كل {CHECK_INTERVAL_SECONDS // 60} دقائق")
+    print("اضغط Ctrl+C للإيقاف\n")
+
+    while True:
+        try:
+            inside_market = run_once()
+
+            if inside_market:
+                print(f"⏳ انتظار {CHECK_INTERVAL_SECONDS // 60} دقائق حتى الفحص التالي...\n")
+                time.sleep(CHECK_INTERVAL_SECONDS)
+            else:
+                # خارج أوقات التداول → نتحقق كل دقيقة
+                time.sleep(60)
+
+        except KeyboardInterrupt:
+            print("\n🛑 تم إيقاف المراقب يدويًا")
+            break
+        except Exception as e:
+            print(f"❌ خطأ غير متوقع: {e}")
+            print("⏳ إعادة المحاولة بعد 60 ثانية...\n")
+            time.sleep(60)
 
 
 if __name__ == "__main__":
