@@ -18,7 +18,7 @@ SEEN_FILE = "seen_saudi.json"
 
 MAX_SHOWN = 10
 CHECK_INTERVAL_SECONDS = 300          # 5 دقائق
-SCAN_START_MINUTES = 10 * 60          # 10:00 صباحاً
+SCAN_START_MINUTES = 10 * 60          # 10:00
 SCAN_END_MINUTES = 16 * 60            # 16:00
 
 # الحد الأدنى لزيادة التغير حتى يُعاد إرسال السهم
@@ -73,7 +73,6 @@ def get_saudi_stocks_dict():
 
 
 def screens():
-    """فلاتر الزخم العامة بعد تخفيفها لتناسب السوق السعودي."""
     common_momentum = [
         col("close") > 0,
         col("change") >= MIN_DAILY_CHANGE,
@@ -92,8 +91,7 @@ def screens():
     }
 
 
-def run_screen(filters, columns, sort_col, tickers_dict=None):
-    """يستخدم السوق السعودي كاملاً (ksa)"""
+def run_screen(filters, columns, sort_col):
     query = (
         Query()
         .set_markets("ksa")
@@ -102,17 +100,15 @@ def run_screen(filters, columns, sort_col, tickers_dict=None):
         .order_by(sort_col, ascending=False)
         .limit(300)
     )
-
     try:
         _, df = query.get_scanner_data()
     except Exception as e:
         print(f"خطأ في الاستعلام من TradingView: {e}")
-        df = None
+        return None
 
     if df is not None and not df.empty:
         df["clean_name"] = df["name"].astype(str).str.replace("TADAWUL:", "").str.strip()
         return df
-
     return df
 
 
@@ -124,11 +120,10 @@ def load_seen():
         if data.get("date") == today:
             return today, data.get("alerted", {}), data.get("last_run_timestamp", 0)
         else:
-            print("📅 تاريخ جديد للسوق، جاري إعادة ضبط سجل التنبيهات...")
+            print("📅 تاريخ جديد، جاري إعادة ضبط سجل التنبيهات...")
             return today, {}, 0
     except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    return today, {}, 0
+        return today, {}, 0
 
 
 def save_seen(today, alerted, last_run_timestamp):
@@ -249,49 +244,36 @@ def send_chunked(header, blocks, footer=""):
 
 def calculate_levels(price, high, low):
     pivot = (high + low + price) / 3
-
     r1 = (2 * pivot) - low if ((2 * pivot) - low) > price else price * 1.025
     r2 = pivot + (high - low) if (pivot + (high - low)) > r1 else r1 * 1.03
     r3 = high + 2 * (pivot - low) if (high + 2 * (pivot - low)) > r2 else r2 * 1.04
-
     support_intraday = low
-
-    t1, t2, t3 = r1, r2, r3
-    t_max = r3 * 1.05
     stop_1 = support_intraday * 0.985
 
     return {
         "support_intraday": support_intraday,
-        "t1": t1,
-        "t2": t2,
-        "t3": t3,
-        "t_max": t_max,
+        "t1": r1,
+        "t2": r2,
+        "t3": r3,
         "stop_1": stop_1,
     }
 
 
 def should_alert(ticker, current_change, alerted):
-    """يقرر هل يرسل تنبيه لهذا السهم أم لا"""
     if ticker not in alerted:
-        return True  # سهم جديد اليوم
-
-    last_change = alerted[ticker].get("change", 0)
-    # يعيد الإرسال فقط إذا زاد التغير بنسبة ملحوظة
-    if current_change >= last_change + MIN_CHANGE_INCREASE:
         return True
+    last_change = alerted[ticker].get("change", 0)
+    return current_change >= last_change + MIN_CHANGE_INCREASE
 
-    return False
 
-
-def run_once():
-    """تنفيذ فحص واحد فقط"""
+def main():
     now_riyadh = datetime.now(RIYADH)
     minutes_now = now_riyadh.hour * 60 + now_riyadh.minute
 
     # خارج أوقات التداول أو نهاية الأسبوع
     if now_riyadh.weekday() in (4, 5) or not (SCAN_START_MINUTES <= minutes_now <= SCAN_END_MINUTES):
         print(f"⏸️ خارج نافذة الفحص: {now_riyadh:%Y-%m-%d %H:%M:%S} بتوقيت الرياض")
-        return False
+        return
 
     today, alerted, last_run_timestamp = load_seen()
     now_timestamp = time.time()
@@ -300,7 +282,7 @@ def run_once():
     if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
         print(f"⏳ لم تمضِ 5 دقائق بعد. المتبقي: {remaining} ثانية.")
-        return True
+        return
 
     print(f"🚀 جاري تنفيذ الفحص... ({now_riyadh:%H:%M:%S})")
 
@@ -311,9 +293,9 @@ def run_once():
         "high", "low", "sector", "description",
         "average_volume_10d_calc", "relative_volume_10d_calc"
     ]
-
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
+
     already_sent_this_run = set()
     new_alerts_count = 0
 
@@ -330,13 +312,12 @@ def run_once():
 
         results = []
         for _, row in df.iterrows():
-            ticker_name = str(row.get('clean_name', row['name'])).strip()
+            ticker_name = str(row.get("clean_name", row["name"])).strip()
             if ticker_name in already_sent_this_run:
                 continue
 
             current_change = float(row[chg_c]) if row[chg_c] else 0.0
 
-            # شرط عدم التكرار إلا عند وجود تغير
             if not should_alert(ticker_name, current_change, alerted):
                 continue
 
@@ -351,20 +332,20 @@ def run_once():
         header = f"🚨 تحديث الزخم والأسهم | {label}"
         blocks = []
 
-        for idx, (ticker, row, current_change) in enumerate(results[:MAX_SHOWN], 1):
+        for ticker, row, current_change in results[:MAX_SHOWN]:
             stock_lines = []
 
             tv_desc = str(row.get("description", "") or "").strip()
             arabic_name = stocks_dict.get(ticker) or tv_desc or ticker
             arabic_name = escape_html(arabic_name)
 
-            sector = escape_html(str(row.get('sector', 'N/A')).strip())
+            sector = escape_html(str(row.get("sector", "N/A")).strip())
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
             price = float(row[price_c]) if row[price_c] else 0.0
             volume = float(row[vol_c]) if row[vol_c] else 0.0
-            high = float(row['high']) if 'high' in row and row['high'] else price * 1.02
-            low = float(row['low']) if 'low' in row and row['low'] else price * 0.98
+            high = float(row["high"]) if "high" in row and row["high"] else price * 1.02
+            low = float(row["low"]) if "low" in row and row["low"] else price * 0.98
             lvl = calculate_levels(price, high, low)
 
             stock_lines.append(f"🔥 {arabic_name} ({ticker})")
@@ -402,32 +383,6 @@ def run_once():
 
     save_seen(today, alerted, now_timestamp)
     print(f"✅ انتهى الفحص | تنبيهات جديدة: {new_alerts_count}")
-    return True
-
-
-def main():
-    print("🟢 بدء تشغيل مراقب الزخم السعودي")
-    print(f"⏰ أوقات العمل: 10:00 → 16:00 | كل {CHECK_INTERVAL_SECONDS // 60} دقائق")
-    print("اضغط Ctrl+C للإيقاف\n")
-
-    while True:
-        try:
-            inside_market = run_once()
-
-            if inside_market:
-                print(f"⏳ انتظار {CHECK_INTERVAL_SECONDS // 60} دقائق حتى الفحص التالي...\n")
-                time.sleep(CHECK_INTERVAL_SECONDS)
-            else:
-                # خارج أوقات التداول → نتحقق كل دقيقة
-                time.sleep(60)
-
-        except KeyboardInterrupt:
-            print("\n🛑 تم إيقاف المراقب يدويًا")
-            break
-        except Exception as e:
-            print(f"❌ خطأ غير متوقع: {e}")
-            print("⏳ إعادة المحاولة بعد 60 ثانية...\n")
-            time.sleep(60)
 
 
 if __name__ == "__main__":
