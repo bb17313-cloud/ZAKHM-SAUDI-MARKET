@@ -1,19 +1,19 @@
-name: translator-summary-bot
+name: Saudi Momentum Bot
 
 on:
   schedule:
-    # تشغيل كل 5 دقائق؛ الكود يفرض نافذة 09:45–16:30 بتوقيت الرياض
+    # كل 5 دقائق
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
 concurrency:
-  group: translator-summary-bot
+  group: saudi-momentum-bot
   cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
