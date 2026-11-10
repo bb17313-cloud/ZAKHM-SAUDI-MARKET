@@ -329,7 +329,7 @@ def build_active_card(stocks, now_riyadh, card_seen):
     """بناء بطاقة نظيفة مثل الصورة: الأسهم الفعالة"""
     time_str = now_riyadh.strftime("%I:%M %p").lstrip("0")
     header = (
-        f"⏱ الأسهم الفعالة · آخر 15 دقيقة\n"
+        f"⏱ الأسهم الفعالة · لايف · آخر 15 دقيقة\n"
         f"{time_str} بتوقيت السعودية"
     )
 
@@ -338,11 +338,18 @@ def build_active_card(stocks, now_riyadh, card_seen):
         ticker = s["ticker"]
         change = s["change"]
         price = s["price"]
+        name = escape_html(s["name"])
+        tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
+        # NEW فقط عند دخول السهم للقائمة لأول مرة
         is_new = ticker not in card_seen
         new_tag = "\n• NEW" if is_new else ""
 
-        line = f"{i}. <b>{escape_html(ticker)}</b> +{change:.2f}% · {price:.2f} ر.س{new_tag}"
+        # الرمز رابط يفتح الشارت + الاسم العربي
+        line = (
+            f"{i}. <a href='{tv_url}'><b>{escape_html(ticker)}</b></a> {name} "
+            f"+{change:.2f}% · {price:.2f} ر.س{new_tag}"
+        )
         lines.append(line)
         if i < len(stocks):
             lines.append("")
@@ -365,37 +372,46 @@ def send_active_card(stocks_dict, now_riyadh, card_seen):
     return new_card_seen
 
 
-def main():
+def run_once():
+    """تشغيل دورة واحدة (بطاقة + تنبيهات تفصيلية إن حان وقتها)"""
     now_riyadh = datetime.now(RIYADH)
     minutes_now = now_riyadh.hour * 60 + now_riyadh.minute
 
     # خارج أوقات التداول أو نهاية الأسبوع
     if now_riyadh.weekday() in (4, 5) or not (SCAN_START_MINUTES <= minutes_now <= SCAN_END_MINUTES):
         print(f"⏸️ خارج نافذة الفحص: {now_riyadh:%Y-%m-%d %H:%M:%S} بتوقيت الرياض")
-        return
+        return False  # خارج الجلسة
 
     today, alerted, last_run_timestamp, last_card_timestamp, card_seen = load_seen()
     now_timestamp = time.time()
 
-    # —— 1) بطاقة الأسهم الفعالة كل 15 دقيقة ——
-    card_elapsed = now_timestamp - last_card_timestamp if last_card_timestamp > 0 else CARD_INTERVAL_SECONDS + 1
-    should_send_card = last_card_timestamp == 0 or card_elapsed >= CARD_INTERVAL_SECONDS
+    # —— 1) بطاقة الأسهم الفعالة كل 15 دقيقة إجبارياً ——
+    current_slot = minutes_now // 15
+    last_card_slot = -1
+    if last_card_timestamp > 0:
+        last_card_dt = datetime.fromtimestamp(last_card_timestamp, RIYADH)
+        last_card_minutes = last_card_dt.hour * 60 + last_card_dt.minute
+        last_card_slot = last_card_minutes // 15
+
+    should_send_card = (last_card_timestamp == 0) or (current_slot != last_card_slot)
 
     if should_send_card:
         stocks_dict = get_saudi_stocks_dict()
         card_seen = send_active_card(stocks_dict, now_riyadh, card_seen)
         last_card_timestamp = now_timestamp
         save_seen(today, alerted, last_run_timestamp, last_card_timestamp, card_seen)
+        print(f"✅ بطاقة الأسهم الفعالة أُرسلت (الشريحة {current_slot})")
     else:
-        remaining_card = int(CARD_INTERVAL_SECONDS - card_elapsed)
-        print(f"⏳ بطاقة الأسهم الفعالة: المتبقي {remaining_card} ثانية")
+        next_slot_minute = (current_slot + 1) * 15
+        remaining_card = max(1, next_slot_minute - minutes_now)
+        print(f"⏳ بطاقة الأسهم الفعالة: الشريحة الحالية مُرسلة، المتبقي تقريباً {remaining_card} دقيقة")
 
     # —— 2) التنبيهات التفصيلية كل 5 دقائق ——
     elapsed = now_timestamp - last_run_timestamp if last_run_timestamp > 0 else CHECK_INTERVAL_SECONDS + 1
     if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
         print(f"⏳ لم تمضِ 5 دقائق بعد. المتبقي: {remaining} ثانية.")
-        return
+        return True
 
     print(f"🚀 جاري تنفيذ الفحص التفصيلي... ({now_riyadh:%H:%M:%S})")
 
@@ -495,6 +511,30 @@ def main():
 
     save_seen(today, alerted, now_timestamp, last_card_timestamp, card_seen)
     print(f"✅ انتهى الفحص | تنبيهات جديدة: {new_alerts_count}")
+    return True
+
+
+def main():
+    """حلقة مستمرة تعمل طوال جلسة التداول"""
+    print("🟢 البوت بدأ العمل بشكل مستمر...")
+    while True:
+        try:
+            inside_session = run_once()
+            if inside_session:
+                # داخل الجلسة: انتظر 60 ثانية ثم أعد الفحص
+                print("⏳ انتظار 60 ثانية للدورة التالية...")
+                time.sleep(60)
+            else:
+                # خارج الجلسة: انتظر 5 دقائق ثم أعد المحاولة
+                print("😴 خارج الجلسة، انتظار 5 دقائق...")
+                time.sleep(300)
+        except KeyboardInterrupt:
+            print("\n🛑 تم إيقاف البوت يدوياً.")
+            break
+        except Exception as e:
+            print(f"❌ خطأ غير متوقع: {e}")
+            print("⏳ إعادة المحاولة بعد 60 ثانية...")
+            time.sleep(60)
 
 
 if __name__ == "__main__":
