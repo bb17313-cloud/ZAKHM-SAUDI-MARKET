@@ -18,6 +18,7 @@ SEEN_FILE = "seen_saudi.json"
 
 MAX_SHOWN = 10
 CHECK_INTERVAL_SECONDS = 300          # 5 دقائق
+CARD_INTERVAL_SECONDS = 900           # 15 دقيقة (ربع ساعة)
 SCAN_START_MINUTES = 10 * 60          # 10:00
 SCAN_END_MINUTES = 16 * 60            # 16:00
 
@@ -30,6 +31,9 @@ MIN_VOLUME = 5_000
 MIN_AVG_VOLUME_10D = 10_000
 MIN_RELATIVE_VOLUME = 0.5
 NEWS_CACHE = {}
+
+# عدد الأسهم في بطاقة الأسهم الفعالة
+TOP_ACTIVE_COUNT = 10
 
 
 def get_saudi_stocks_dict():
@@ -118,20 +122,28 @@ def load_seen():
         with open(SEEN_FILE) as f:
             data = json.load(f)
         if data.get("date") == today:
-            return today, data.get("alerted", {}), data.get("last_run_timestamp", 0)
+            return (
+                today,
+                data.get("alerted", {}),
+                data.get("last_run_timestamp", 0),
+                data.get("last_card_timestamp", 0),
+                data.get("card_seen", {}),
+            )
         else:
             print("📅 تاريخ جديد، جاري إعادة ضبط سجل التنبيهات...")
-            return today, {}, 0
+            return today, {}, 0, 0, {}
     except (FileNotFoundError, json.JSONDecodeError):
-        return today, {}, 0
+        return today, {}, 0, 0, {}
 
 
-def save_seen(today, alerted, last_run_timestamp):
+def save_seen(today, alerted, last_run_timestamp, last_card_timestamp, card_seen):
     with open(SEEN_FILE, "w") as f:
         json.dump({
             "date": today,
             "alerted": alerted,
-            "last_run_timestamp": last_run_timestamp
+            "last_run_timestamp": last_run_timestamp,
+            "last_card_timestamp": last_card_timestamp,
+            "card_seen": card_seen,
         }, f, indent=2, ensure_ascii=False)
 
 
@@ -266,6 +278,93 @@ def should_alert(ticker, current_change, alerted):
     return current_change >= last_change + MIN_CHANGE_INCREASE
 
 
+def fetch_top_active_stocks(stocks_dict):
+    """جلب أعلى الأسهم نشاطاً (حسب التغير %) للبطاقة النظيفة"""
+    filters = [
+        col("close") > 0,
+        col("change") >= 0.1,
+        col("volume") >= MIN_VOLUME,
+    ]
+    columns = ["name", "close", "change", "volume", "description"]
+    query = (
+        Query()
+        .set_markets("ksa")
+        .select(*columns)
+        .where(*filters)
+        .order_by("change", ascending=False)
+        .limit(50)
+    )
+    try:
+        _, df = query.get_scanner_data()
+    except Exception as e:
+        print(f"خطأ في جلب الأسهم الفعالة: {e}")
+        return []
+
+    if df is None or df.empty:
+        return []
+
+    df["clean_name"] = df["name"].astype(str).str.replace("TADAWUL:", "").str.strip()
+    results = []
+    for _, row in df.iterrows():
+        ticker = str(row.get("clean_name", "")).strip()
+        if not ticker:
+            continue
+        price = float(row["close"]) if row["close"] else 0.0
+        change = float(row["change"]) if row["change"] else 0.0
+        volume = float(row["volume"]) if row["volume"] else 0.0
+        arabic_name = stocks_dict.get(ticker) or str(row.get("description", "") or ticker).strip()
+        results.append({
+            "ticker": ticker,
+            "name": arabic_name,
+            "price": price,
+            "change": change,
+            "volume": volume,
+        })
+        if len(results) >= TOP_ACTIVE_COUNT:
+            break
+    return results
+
+
+def build_active_card(stocks, now_riyadh, card_seen):
+    """بناء بطاقة نظيفة مثل الصورة: الأسهم الفعالة"""
+    time_str = now_riyadh.strftime("%I:%M %p").lstrip("0")
+    header = (
+        f"⏱ الأسهم الفعالة · آخر 15 دقيقة\n"
+        f"{time_str} بتوقيت السعودية"
+    )
+
+    lines = [header, ""]
+    for i, s in enumerate(stocks, 1):
+        ticker = s["ticker"]
+        change = s["change"]
+        price = s["price"]
+
+        is_new = ticker not in card_seen
+        new_tag = "\n• NEW" if is_new else ""
+
+        line = f"{i}. <b>{escape_html(ticker)}</b> +{change:.2f}% · {price:.2f} ر.س{new_tag}"
+        lines.append(line)
+        if i < len(stocks):
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def send_active_card(stocks_dict, now_riyadh, card_seen):
+    """إرسال بطاقة الأسهم الفعالة كل ربع ساعة"""
+    stocks = fetch_top_active_stocks(stocks_dict)
+    if not stocks:
+        print("⚠️ لا توجد أسهم فعالة للبطاقة")
+        return card_seen
+
+    text = build_active_card(stocks, now_riyadh, card_seen)
+    send(text)
+
+    new_card_seen = {s["ticker"]: s["change"] for s in stocks}
+    print(f"📋 أُرسلت بطاقة الأسهم الفعالة ({len(stocks)} أسهم)")
+    return new_card_seen
+
+
 def main():
     now_riyadh = datetime.now(RIYADH)
     minutes_now = now_riyadh.hour * 60 + now_riyadh.minute
@@ -275,16 +374,30 @@ def main():
         print(f"⏸️ خارج نافذة الفحص: {now_riyadh:%Y-%m-%d %H:%M:%S} بتوقيت الرياض")
         return
 
-    today, alerted, last_run_timestamp = load_seen()
+    today, alerted, last_run_timestamp, last_card_timestamp, card_seen = load_seen()
     now_timestamp = time.time()
-    elapsed = now_timestamp - last_run_timestamp
 
+    # —— 1) بطاقة الأسهم الفعالة كل 15 دقيقة ——
+    card_elapsed = now_timestamp - last_card_timestamp if last_card_timestamp > 0 else CARD_INTERVAL_SECONDS + 1
+    should_send_card = last_card_timestamp == 0 or card_elapsed >= CARD_INTERVAL_SECONDS
+
+    if should_send_card:
+        stocks_dict = get_saudi_stocks_dict()
+        card_seen = send_active_card(stocks_dict, now_riyadh, card_seen)
+        last_card_timestamp = now_timestamp
+        save_seen(today, alerted, last_run_timestamp, last_card_timestamp, card_seen)
+    else:
+        remaining_card = int(CARD_INTERVAL_SECONDS - card_elapsed)
+        print(f"⏳ بطاقة الأسهم الفعالة: المتبقي {remaining_card} ثانية")
+
+    # —— 2) التنبيهات التفصيلية كل 5 دقائق ——
+    elapsed = now_timestamp - last_run_timestamp if last_run_timestamp > 0 else CHECK_INTERVAL_SECONDS + 1
     if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
         print(f"⏳ لم تمضِ 5 دقائق بعد. المتبقي: {remaining} ثانية.")
         return
 
-    print(f"🚀 جاري تنفيذ الفحص... ({now_riyadh:%H:%M:%S})")
+    print(f"🚀 جاري تنفيذ الفحص التفصيلي... ({now_riyadh:%H:%M:%S})")
 
     extra, sort_col, defs = screens()
     stocks_dict = get_saudi_stocks_dict()
@@ -370,7 +483,6 @@ def main():
 
             blocks.append("\n".join(stock_lines))
 
-            # تحديث سجل التنبيه
             alerted[ticker] = {
                 "change": current_change,
                 "price": price,
@@ -381,7 +493,7 @@ def main():
         footer = "\nللفرز فقط، تأكد من البيانات قبل أي قرار."
         send_chunked(header, blocks, footer)
 
-    save_seen(today, alerted, now_timestamp)
+    save_seen(today, alerted, now_timestamp, last_card_timestamp, card_seen)
     print(f"✅ انتهى الفحص | تنبيهات جديدة: {new_alerts_count}")
 
 
