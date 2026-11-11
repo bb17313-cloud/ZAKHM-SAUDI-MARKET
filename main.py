@@ -77,6 +77,10 @@ def get_saudi_stocks_dict():
         # أسهم جديدة
         "9542": "كيير", "9595": "دبليوإسإم", "4144": "رعوم", "9612": "سما",
         "9578": "أطلس", "9552": "توب", "7201": "البحر",
+        "4310": "معرفة", "6050": "السعودية", "4080": "سيناد", "9572": "ال",
+        "4230": "ريد", "9549": "نسيج", "9557": "المصانع", "9560": "البحر",
+        "9563": "الجزيرة", "9570": "الراية", "9580": "الخدمات", "9590": "التقنية",
+        "9600": "الأولى", "9620": "الواحة", "9630": "النور", "9640": "السلام",
     }
 
 
@@ -353,11 +357,11 @@ def build_active_card(stocks, now_riyadh):
     """بناء بطاقة نظيفة ومضغوطة كل 10 دقائق"""
     time_str = now_riyadh.strftime("%I:%M %p").lstrip("0")
     header = (
-        f"<b>⏱ الأسهم الفعالة · لايف · آخر 10 دقائق</b>\n"
-        f"<code>{time_str} بتوقيت السعودية</code>"
+        f"⏱ <b>الأسهم الفعالة · لايف · آخر 10 دقائق</b>\n"
+        f"<code>{time_str} بتوقيت السعودية</code>\n"
     )
 
-    lines = [header, ""]
+    lines = [header]
     for i, s in enumerate(stocks, 1):
         ticker = s["ticker"]
         change = s["change"]
@@ -365,9 +369,10 @@ def build_active_card(stocks, now_riyadh):
         name = escape_html(s["name"])
         tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
+        # تنسيق نظيف: الاسم + الرقم (رابط) + النسبة + السعر
         line = (
-            f"<b>{i}.</b> {name} "
-            f"<a href='{tv_url}'><code>{escape_html(ticker)}</code></a> "
+            f"{i}. {name} "
+            f"<a href=\"{tv_url}\">{ticker}</a> "
             f"<b>+{change:.2f}%</b> · {price:.2f}"
         )
         lines.append(line)
