@@ -13,9 +13,17 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache seen file
+        uses: actions/cache@v4
+        with:
+          path: seen_saudi.json
+          key: seen-saudi-${{ github.run_id }}
+          restore-keys: |
+            seen-saudi-
 
       - uses: actions/setup-python@v5
         with:
