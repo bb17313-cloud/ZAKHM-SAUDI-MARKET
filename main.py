@@ -24,7 +24,7 @@ SCAN_END_MINUTES = 16 * 60            # 16:00
 # الحد الأدنى لزيادة التغير حتى يُعاد إرسال السهم
 MIN_CHANGE_INCREASE = 0.5
 
-# فلاتر مخففة لتناسب السوق السعودي (تم إلغاء شرط متوسط الحجم 10 أيام)
+# فلاتر مخففة لتناسب السوق السعودي (تم إلغاء متوسط الحجم 10 أيام)
 MIN_DAILY_CHANGE = 0.5
 MIN_VOLUME = 5_000
 MIN_RELATIVE_VOLUME = 0.5
@@ -35,7 +35,7 @@ TOP_ACTIVE_COUNT = 10
 
 
 def get_saudi_stocks_dict():
-    """قائمة الأسهم السعودية المحدثة + اختصارات قصيرة"""
+    """قائمة الأسهم السعودية المحدثة بالأسماء العربية شاملة الأسهم الجديدة"""
     return {
         "4150": "التعمير", "9523": "لدن", "2030": "المصافي", "2222": "أرامكو",
         "2380": "بترورابغ", "2381": "الحفر", "2382": "أديس", "4030": "البحري",
@@ -73,18 +73,20 @@ def get_saudi_stocks_dict():
         "1180": "الأهلي", "1111": "تداول", "7200": "امآيإس", "7202": "سلوشنز",
         "7203": "علم", "7010": "STC", "7020": "موبايلي", "7030": "زين",
         "2082": "أكوا", "2083": "مرافق", "5110": "الكهرباء",
-        # أسهم جديدة
+        # أسهم جديدة مضافة
         "9542": "كيير", "9595": "دبليوإسإم", "4144": "رعوم", "9612": "سما",
-        "9578": "أطلس", "9552": "توب", "7201": "البحر",
-        "4310": "معرفة", "6050": "السعودية", "4080": "سيناد", "9572": "ال",
-        "4230": "ريد", "9549": "نسيج", "9557": "المصانع", "9560": "البحر",
-        "9563": "الجزيرة", "9570": "الراية", "9580": "الخدمات", "9590": "التقنية",
-        "9600": "الأولى", "9620": "الواحة", "9630": "النور", "9640": "السلام",
+        "9578": "أطلس", "9552": "توب", "7201": "البحر", "4310": "معرفة",
+        "6050": "السعودية", "4080": "سيناد", "4230": "ريد", "9549": "نسيج",
+        "9557": "المصانع", "9560": "البحر", "9563": "الجزيرة", "9570": "الراية",
+        "9580": "الخدمات", "9590": "التقنية", "9600": "الأولى", "9620": "الواحة",
+        "9630": "النور", "9640": "السلام", "9605": "نيفط", "9591": "فيو",
+        "4327": "الرمز", "9619": "ملتي", "9608": "الرمز", "4191": "عبدالله",
+        "9602": "يقين"
     }
 
 
 def short_name(name: str) -> str:
-    """اختصار الاسم لكلمة واحدة تقريباً"""
+    """اختصار الاسم وتجنب الأسماء الإنجليزية الصرفة إن أمكن"""
     if not name:
         return ""
     remove = ["شركة", "مساهمة", "سعودية", "السعودية", "الـ", "Co.", "Company",
@@ -103,11 +105,8 @@ def screens():
         col("volume") >= MIN_VOLUME,
         col("relative_volume_10d_calc") >= MIN_RELATIVE_VOLUME,
     ]
-    
-    # زخم مبكر (0.5% - 3.0%)
     early_momentum = common_momentum + [col("change") <= 3.0]
     
-    # زخم لحظي (0.03% - 7.0%) - تم التعديل إلى 0.03
     intraday_momentum = [
         col("close") > 0,
         col("change") >= 0.03,
@@ -309,7 +308,7 @@ def should_alert(ticker, current_change, alerted):
 
 
 def fetch_top_active_stocks(stocks_dict):
-    """جلب أعلى الأسهم نشاطاً (حسب التغير %) للبطاقة النظيفة"""
+    """جلب أعلى الأسهم نشاطاً (حسب التغير %) للبطاقة النظيفة مع ضمان الاسم العربي"""
     filters = [
         col("close") > 0,
         col("change") >= 0.1,
@@ -343,12 +342,13 @@ def fetch_top_active_stocks(stocks_dict):
         change = float(row["change"]) if row["change"] else 0.0
         volume = float(row["volume"]) if row["volume"] else 0.0
 
+        # الأولوية للقاموس العربي، وإذا لم يوجد يتم توليد اسم بديل أو استخدام الرمز كاحتياط
         arabic = stocks_dict.get(ticker)
         if arabic:
             name = arabic
         else:
-            desc = str(row.get("description", "") or ticker).strip()
-            name = short_name(desc)
+            desc = str(row.get("description", "") or "").strip()
+            name = short_name(desc) if desc and not any(ord(c) < 128 for c in desc[:3]) else f"سهم {ticker}"
 
         results.append({
             "ticker": ticker,
@@ -497,7 +497,7 @@ def run_once():
             stock_lines = []
 
             tv_desc = str(row.get("description", "") or "").strip()
-            arabic_name = stocks_dict.get(ticker) or short_name(tv_desc) or ticker
+            arabic_name = stocks_dict.get(ticker) or (short_name(tv_desc) if not any(ord(c) < 128 for c in tv_desc[:3]) else f"سهم {ticker}")
             arabic_name = escape_html(arabic_name)
 
             sector = escape_html(str(row.get("sector", "N/A")).strip())
