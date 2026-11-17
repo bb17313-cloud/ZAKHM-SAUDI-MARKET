@@ -17,14 +17,14 @@ SEEN_FILE = "seen_saudi.json"
 
 MAX_SHOWN = 10
 CHECK_INTERVAL_SECONDS = 300          # 5 دقائق للتنبيهات التفصيلية
-CARD_INTERVAL_MINUTES = 10            # البطاقة كل 10 دقائق
+CARD_INTERVAL_MINUTES = 3             # 🌟 تم التعديل لتكون البطاقة كل 3 دقائق
 SCAN_START_MINUTES = 10 * 60          # 10:00
 SCAN_END_MINUTES = 16 * 60            # 16:00
 
 # الحد الأدنى لزيادة التغير حتى يُعاد إرسال السهم
 MIN_CHANGE_INCREASE = 0.5
 
-# فلاتر مخففة لتناسب السوق السعودي (تم إلغاء متوسط الحجم 10 أيام)
+# فلاتر مخففة لتناسب السوق السعودي
 MIN_DAILY_CHANGE = 0.5
 MIN_VOLUME = 5_000
 MIN_RELATIVE_VOLUME = 0.5
@@ -35,7 +35,7 @@ TOP_ACTIVE_COUNT = 10
 
 
 def get_saudi_stocks_dict():
-    """قائمة الأسهم السعودية المحدثة بالأسماء العربية شاملة الأسهم الجديدة"""
+    """قائمة الأسهم السعودية المحدثة بالأسماء العربية"""
     return {
         "4150": "التعمير", "9523": "لدن", "2030": "المصافي", "2222": "أرامكو",
         "2380": "بترورابغ", "2381": "الحفر", "2382": "أديس", "4030": "البحري",
@@ -73,7 +73,7 @@ def get_saudi_stocks_dict():
         "1180": "الأهلي", "1111": "تداول", "7200": "امآيإس", "7202": "سلوشنز",
         "7203": "علم", "7010": "STC", "7020": "موبايلي", "7030": "زين",
         "2082": "أكوا", "2083": "مرافق", "5110": "الكهرباء",
-        # أسهم جديدة مضافة
+        # أسهم إضافية
         "9542": "كيير", "9595": "دبليوإسإم", "4144": "رعوم", "9612": "سما",
         "9578": "أطلس", "9552": "توب", "7201": "البحر", "4310": "معرفة",
         "6050": "السعودية", "4080": "سيناد", "4230": "ريد", "9549": "نسيج",
@@ -81,12 +81,11 @@ def get_saudi_stocks_dict():
         "9580": "الخدمات", "9590": "التقنية", "9600": "الأولى", "9620": "الواحة",
         "9630": "النور", "9640": "السلام", "9605": "نيفط", "9591": "فيو",
         "4327": "الرمز", "9619": "ملتي", "9608": "الرمز", "4191": "عبدالله",
-        "9602": "يقين"
+        "9602": "يقين", "4210": "الخزف", "4300": "الدار", "4327": "الرمز"
     }
 
 
 def short_name(name: str) -> str:
-    """اختصار الاسم وتجنب الأسماء الإنجليزية الصرفة إن أمكن"""
     if not name:
         return ""
     remove = ["شركة", "مساهمة", "سعودية", "السعودية", "الـ", "Co.", "Company",
@@ -308,7 +307,7 @@ def should_alert(ticker, current_change, alerted):
 
 
 def fetch_top_active_stocks(stocks_dict):
-    """جلب أعلى الأسهم نشاطاً (حسب التغير %) للبطاقة النظيفة مع ضمان الاسم العربي"""
+    """جلب أعلى الأسهم نشاطاً وتصحيح الأسماء العربية بالكامل"""
     filters = [
         col("close") > 0,
         col("change") >= 0.1,
@@ -342,13 +341,17 @@ def fetch_top_active_stocks(stocks_dict):
         change = float(row["change"]) if row["change"] else 0.0
         volume = float(row["volume"]) if row["volume"] else 0.0
 
-        # الأولوية للقاموس العربي، وإذا لم يوجد يتم توليد اسم بديل أو استخدام الرمز كاحتياط
+        # جلب الاسم العربي بدقة منعاً للتكرار
         arabic = stocks_dict.get(ticker)
         if arabic:
             name = arabic
         else:
             desc = str(row.get("description", "") or "").strip()
-            name = short_name(desc) if desc and not any(ord(c) < 128 for c in desc[:3]) else f"سهم {ticker}"
+            # إذا كان الوصف إنجليزياً بحتاً، نستخدم اسم افتراضي مرتب أو الرمز
+            if desc and not any(ord(c) < 128 for c in desc[:3]):
+                name = short_name(desc)
+            else:
+                name = f"سهم {ticker}"
 
         results.append({
             "ticker": ticker,
@@ -363,10 +366,10 @@ def fetch_top_active_stocks(stocks_dict):
 
 
 def build_active_card(stocks, now_riyadh):
-    """بناء بطاقة نظيفة ومضغوطة كل 10 دقائق"""
+    """بناء بطاقة الأسهم الفعالة بتنسيق مرتب ونظيف"""
     time_str = now_riyadh.strftime("%I:%M %p").lstrip("0")
     header = (
-        f"⏱ <b>الأسهم الفعالة · لايف · آخر 10 دقائق</b>\n"
+        f"⏱ <b>الأسهم الفعالة · لايف · آخر 3 دقائق</b>\n"
         f"<code>{time_str} بتوقيت السعودية</code>\n"
     )
 
@@ -378,6 +381,7 @@ def build_active_card(stocks, now_riyadh):
         name = escape_html(s["name"])
         tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
+        # تنسيق موحد لمنع تكرار اسم الرمز
         line = (
             f"{i}. {name} "
             f"<a href=\"{tv_url}\">{ticker}</a> "
@@ -389,7 +393,6 @@ def build_active_card(stocks, now_riyadh):
 
 
 def send_active_card(stocks_dict, now_riyadh, card_seen):
-    """إرسال بطاقة الأسهم الفعالة كل 10 دقائق"""
     stocks = fetch_top_active_stocks(stocks_dict)
     if not stocks:
         print("⚠️ لا توجد أسهم فعالة للبطاقة")
@@ -404,11 +407,9 @@ def send_active_card(stocks_dict, now_riyadh, card_seen):
 
 
 def run_once():
-    """تشغيل دورة واحدة فقط (مناسب لـ GitHub Actions)"""
     now_riyadh = datetime.now(RIYADH)
     minutes_now = now_riyadh.hour * 60 + now_riyadh.minute
 
-    # خارج أوقات التداول أو نهاية الأسبوع
     if now_riyadh.weekday() in (4, 5) or not (SCAN_START_MINUTES <= minutes_now <= SCAN_END_MINUTES):
         print(f"⏸️ خارج نافذة الفحص: {now_riyadh:%Y-%m-%d %H:%M:%S} بتوقيت الرياض")
         return
@@ -416,7 +417,7 @@ def run_once():
     today, alerted, last_run_timestamp, last_card_timestamp, card_seen = load_seen()
     now_timestamp = time.time()
 
-    # —— 1) بطاقة الأسهم الفعالة كل 10 دقائق ——
+    # —— 1) بطاقة الأسهم الفعالة كل 3 دقائق ——
     current_slot = minutes_now // CARD_INTERVAL_MINUTES
     last_card_slot = -1
     if last_card_timestamp > 0:
