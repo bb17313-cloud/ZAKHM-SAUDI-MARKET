@@ -17,7 +17,7 @@ SEEN_FILE = "seen_saudi.json"
 
 MAX_SHOWN = 10
 CHECK_INTERVAL_SECONDS = 300          # 5 دقائق للتنبيهات التفصيلية
-CARD_INTERVAL_MINUTES = 3             # 🌟 تم التعديل لتكون البطاقة كل 3 دقائق
+CARD_INTERVAL_MINUTES = 3             # بطاقة الأسهم الفعالة كل 3 دقائق
 SCAN_START_MINUTES = 10 * 60          # 10:00
 SCAN_END_MINUTES = 16 * 60            # 16:00
 
@@ -35,7 +35,7 @@ TOP_ACTIVE_COUNT = 10
 
 
 def get_saudi_stocks_dict():
-    """قائمة الأسهم السعودية المحدثة بالأسماء العربية"""
+    """قائمة الأسهم السعودية المحدثة بالأسماء العربية الدقيقة"""
     return {
         "4150": "التعمير", "9523": "لدن", "2030": "المصافي", "2222": "أرامكو",
         "2380": "بترورابغ", "2381": "الحفر", "2382": "أديس", "4030": "البحري",
@@ -72,16 +72,17 @@ def get_saudi_stocks_dict():
         "1080": "العربي", "1120": "الراجحي", "1140": "البلاد", "1150": "الإنماء",
         "1180": "الأهلي", "1111": "تداول", "7200": "امآيإس", "7202": "سلوشنز",
         "7203": "علم", "7010": "STC", "7020": "موبايلي", "7030": "زين",
-        "2082": "أكوا", "2083": "مرافق", "5110": "الكهرباء",
-        # أسهم إضافية
+        "2082": "أكوا", "2083": "مرافق", "5110": "الكهرباء", "4210": "الخزف",
+        # الأسهم الحديثة والظاهرة في الصور
         "9542": "كيير", "9595": "دبليوإسإم", "4144": "رعوم", "9612": "سما",
         "9578": "أطلس", "9552": "توب", "7201": "البحر", "4310": "معرفة",
         "6050": "السعودية", "4080": "سيناد", "4230": "ريد", "9549": "نسيج",
         "9557": "المصانع", "9560": "البحر", "9563": "الجزيرة", "9570": "الراية",
         "9580": "الخدمات", "9590": "التقنية", "9600": "الأولى", "9620": "الواحة",
         "9630": "النور", "9640": "السلام", "9605": "نيفط", "9591": "فيو",
-        "4327": "الرمز", "9619": "ملتي", "9608": "الرمز", "4191": "عبدالله",
-        "9602": "يقين", "4210": "الخزف", "4300": "الدار", "4327": "الرمز"
+        "4327": "المتطورة", "9619": "ملتي", "9608": "أنابيب", "4191": "الأنابيب",
+        "9602": "يقين", "4300": "الدار", "4322": "أدвлека", "4322": "سمنت الشرقية",
+        "4194": "سهم مميز"
     }
 
 
@@ -307,7 +308,7 @@ def should_alert(ticker, current_change, alerted):
 
 
 def fetch_top_active_stocks(stocks_dict):
-    """جلب أعلى الأسهم نشاطاً وتصحيح الأسماء العربية بالكامل"""
+    """جلب أعلى الأسهم نشاطاً وضمان الاسم العربي الصحيح"""
     filters = [
         col("close") > 0,
         col("change") >= 0.1,
@@ -341,17 +342,16 @@ def fetch_top_active_stocks(stocks_dict):
         change = float(row["change"]) if row["change"] else 0.0
         volume = float(row["volume"]) if row["volume"] else 0.0
 
-        # جلب الاسم العربي بدقة منعاً للتكرار
+        # التحقق من القاموس العربي أولاً، ثم محاولة تنظيف الوصف أو استخدام اسم افتراضي مرتب بدلاً من الرمز المتكرر
         arabic = stocks_dict.get(ticker)
         if arabic:
             name = arabic
         else:
             desc = str(row.get("description", "") or "").strip()
-            # إذا كان الوصف إنجليزياً بحتاً، نستخدم اسم افتراضي مرتب أو الرمز
             if desc and not any(ord(c) < 128 for c in desc[:3]):
                 name = short_name(desc)
             else:
-                name = f"سهم {ticker}"
+                name = f"شركة {ticker}"
 
         results.append({
             "ticker": ticker,
@@ -366,7 +366,7 @@ def fetch_top_active_stocks(stocks_dict):
 
 
 def build_active_card(stocks, now_riyadh):
-    """بناء بطاقة الأسهم الفعالة بتنسيق مرتب ونظيف"""
+    """بناء بطاقة الأسهم الفعالة بتنسيق نظيف ومرتب"""
     time_str = now_riyadh.strftime("%I:%M %p").lstrip("0")
     header = (
         f"⏱ <b>الأسهم الفعالة · لايف · آخر 3 دقائق</b>\n"
@@ -381,7 +381,6 @@ def build_active_card(stocks, now_riyadh):
         name = escape_html(s["name"])
         tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
-        # تنسيق موحد لمنع تكرار اسم الرمز
         line = (
             f"{i}. {name} "
             f"<a href=\"{tv_url}\">{ticker}</a> "
@@ -498,7 +497,7 @@ def run_once():
             stock_lines = []
 
             tv_desc = str(row.get("description", "") or "").strip()
-            arabic_name = stocks_dict.get(ticker) or (short_name(tv_desc) if not any(ord(c) < 128 for c in tv_desc[:3]) else f"سهم {ticker}")
+            arabic_name = stocks_dict.get(ticker) or (short_name(tv_desc) if not any(ord(c) < 128 for c in tv_desc[:3]) else f"شركة {ticker}")
             arabic_name = escape_html(arabic_name)
 
             sector = escape_html(str(row.get("sector", "N/A")).strip())
