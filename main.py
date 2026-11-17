@@ -81,8 +81,8 @@ def get_saudi_stocks_dict():
         "9580": "الخدمات", "9590": "التقنية", "9600": "الأولى", "9620": "الواحة",
         "9630": "النور", "9640": "السلام", "9605": "نيفط", "9591": "فيو",
         "4327": "المتطورة", "9619": "ملتي", "9608": "أنابيب", "4191": "الأنابيب",
-        "9602": "يقين", "4300": "الدار", "4322": "أدвлека", "4322": "سمنت الشرقية",
-        "4194": "سهم مميز"
+        "9602": "يقين", "4300": "الدار", "4322": "سمنت الشرقية",
+        "4194": "تداول ريت", "6002": "هرفي"
     }
 
 
@@ -308,7 +308,7 @@ def should_alert(ticker, current_change, alerted):
 
 
 def fetch_top_active_stocks(stocks_dict):
-    """جلب أعلى الأسهم نشاطاً وضمان الاسم العربي الصحيح"""
+    """جلب أعلى الأسهم نشاطاً مع تنظيف الأسماء وضبطها لتفادي التداخل"""
     filters = [
         col("close") > 0,
         col("change") >= 0.1,
@@ -342,7 +342,7 @@ def fetch_top_active_stocks(stocks_dict):
         change = float(row["change"]) if row["change"] else 0.0
         volume = float(row["volume"]) if row["volume"] else 0.0
 
-        # التحقق من القاموس العربي أولاً، ثم محاولة تنظيف الوصف أو استخدام اسم افتراضي مرتب بدلاً من الرمز المتكرر
+        # أخذ الاسم بدقة من القاموس، وإذا لم يوجد يتم إعطاء اسم نظيف مرتبط بالرمز
         arabic = stocks_dict.get(ticker)
         if arabic:
             name = arabic
@@ -351,7 +351,7 @@ def fetch_top_active_stocks(stocks_dict):
             if desc and not any(ord(c) < 128 for c in desc[:3]):
                 name = short_name(desc)
             else:
-                name = f"شركة {ticker}"
+                name = f"سهم {ticker}"
 
         results.append({
             "ticker": ticker,
@@ -366,7 +366,7 @@ def fetch_top_active_stocks(stocks_dict):
 
 
 def build_active_card(stocks, now_riyadh):
-    """بناء بطاقة الأسهم الفعالة بتنسيق نظيف ومرتب"""
+    """بناء بطاقة الأسهم الفعالة بتنسيق ثابت وسلس يمنع تداخل الأرقام والأسعار"""
     time_str = now_riyadh.strftime("%I:%M %p").lstrip("0")
     header = (
         f"⏱ <b>الأسهم الفعالة · لايف · آخر 3 دقائق</b>\n"
@@ -381,10 +381,11 @@ def build_active_card(stocks, now_riyadh):
         name = escape_html(s["name"])
         tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
+        # تنسيق مرتب يضمن عدم نزول السعر لسطر جديد
         line = (
             f"{i}. {name} "
             f"<a href=\"{tv_url}\">{ticker}</a> "
-            f"<b>+{change:.2f}%</b> · {price:.2f}"
+            f"<b>+{change:.2f}%</b> · <code>{price:.2f}</code>"
         )
         lines.append(line)
 
@@ -497,7 +498,7 @@ def run_once():
             stock_lines = []
 
             tv_desc = str(row.get("description", "") or "").strip()
-            arabic_name = stocks_dict.get(ticker) or (short_name(tv_desc) if not any(ord(c) < 128 for c in tv_desc[:3]) else f"شركة {ticker}")
+            arabic_name = stocks_dict.get(ticker) or (short_name(tv_desc) if not any(ord(c) < 128 for c in tv_desc[:3]) else f"سهم {ticker}")
             arabic_name = escape_html(arabic_name)
 
             sector = escape_html(str(row.get("sector", "N/A")).strip())
