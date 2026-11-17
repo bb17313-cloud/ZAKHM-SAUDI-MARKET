@@ -538,6 +538,6 @@ def run_once():
 
 
 if __name__ == "__main__":
-    print("🟢 تشغيل دورة واحدة (GitHub Actions mode)...")
-    run_once()
+    print("💤 التحديث القادم بعد 3 دقائق...")
+            time.sleep(180)  # 🌟 التكرار كل 3 دقائق (180 ثانية)
     print("🏁 انتهى التشغيل.")
