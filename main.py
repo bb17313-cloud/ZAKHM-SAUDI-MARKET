@@ -97,6 +97,47 @@ def short_name(name: str) -> str:
     return name[:12]
 
 
+ARABIC_NAME_CACHE = {}
+
+
+def resolve_arabic_name(ticker, stocks_dict, tv_desc=""):
+    if ticker in stocks_dict:
+        return stocks_dict[ticker]
+    if ticker in ARABIC_NAME_CACHE:
+        return ARABIC_NAME_CACHE[ticker]
+
+    def is_arabic(s):
+        return any("\u0600" <= c <= "\u06FF" for c in s)
+
+    name = ""
+    if tv_desc and is_arabic(tv_desc):
+        name = short_name(tv_desc)
+
+    if not name:
+        try:
+            r = requests.post(
+                "https://scanner.tradingview.com/ksa/scan",
+                json={
+                    "symbols": {"tickers": [f"TADAWUL:{ticker}"]},
+                    "columns": ["description"],
+                    "options": {"lang": "ar"},
+                },
+                timeout=10,
+            )
+            data = r.json().get("data", [])
+            if data:
+                desc = str(data[0]["d"][0] or "").strip()
+                if is_arabic(desc):
+                    name = short_name(desc)
+        except Exception:
+            pass
+
+    if name:
+        ARABIC_NAME_CACHE[ticker] = name
+        return name
+    return f"سهم {ticker}"
+
+
 def screens():
     common_momentum = [
         col("close") > 0,
@@ -204,6 +245,8 @@ def escape_html(value) -> str:
 
 
 def fetch_live_news(ticker, company_name):
+    from email.utils import parsedate_to_datetime
+
     cache_key = (str(ticker), str(company_name))
     if cache_key in NEWS_CACHE:
         return NEWS_CACHE[cache_key]
@@ -222,23 +265,53 @@ def fetch_live_news(ticker, company_name):
         response.raise_for_status()
         root = ET.fromstring(response.content)
         allowed = ("saudiexchange.sa", "argaam.com", "mubasher.info")
+        now_utc = datetime.now(ZoneInfo("UTC"))
         results = []
         seen = set()
         for item in root.findall("./channel/item"):
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
-            date = (item.findtext("pubDate") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
             source_el = item.find("source")
             source = (source_el.text or "").strip() if source_el is not None else ""
+            source_url = source_el.get("url", "") if source_el is not None else ""
             if not title or not link:
                 continue
+
+            # 1) المصادر المسموحة فقط
+            if source_url and not any(d in source_url for d in allowed):
+                continue
+
+            # 2) إزالة اسم المصدر المكرر من آخر العنوان
+            if source and title.endswith(f" - {source}"):
+                title = title[: -len(f" - {source}")].strip()
+
+            # 3) الخبر لازم يذكر رمز السهم أو اسمه في العنوان
+            names = {str(ticker), str(company_name)}
+            if not any(n and n in title for n in names):
+                continue
+
+            # 4) آخر 48 ساعة فقط + تنسيق التاريخ بتوقيت الرياض
+            date_text = ""
+            dt = None
+            try:
+                dt = parsedate_to_datetime(pub)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                if (now_utc - dt).total_seconds() > 48 * 3600:
+                    continue
+                date_text = dt.astimezone(RIYADH).strftime("%d/%m %H:%M")
+            except Exception:
+                pass
+
             key = (title, link)
             if key in seen:
                 continue
             seen.add(key)
-            results.append((title, link, date, source))
-            if len(results) >= 2:
-                break
+            results.append((dt, (title, link, date_text, source)))
+
+        results.sort(key=lambda x: x[0] or now_utc, reverse=True)
+        results = [r[1] for r in results[:2]]
         NEWS_CACHE[cache_key] = results
         return results
     except Exception:
@@ -325,15 +398,7 @@ def fetch_top_active_stocks(stocks_dict):
             change = float(row["change"]) if row["change"] else 0.0
             volume = float(row["volume"]) if row["volume"] else 0.0
 
-            arabic = stocks_dict.get(ticker)
-            if arabic:
-                name = arabic
-            else:
-                desc = str(row.get("description", "") or "").strip()
-                if desc and not any(ord(c) < 128 for c in desc[:3]):
-                    name = short_name(desc)
-                else:
-                    name = f"سهم {ticker}"
+            name = resolve_arabic_name(ticker, stocks_dict, str(row.get("description", "") or "").strip())
 
             results.append({
                 "ticker": ticker,
@@ -457,8 +522,8 @@ def run_once():
             stock_lines = []
 
             tv_desc = str(row.get("description", "") or "").strip()
-            arabic_name = stocks_dict.get(ticker) or (short_name(tv_desc) if not any(ord(c) < 128 for c in tv_desc[:3]) else f"سهم {ticker}")
-            arabic_name = escape_html(arabic_name)
+            raw_arabic_name = resolve_arabic_name(ticker, stocks_dict, tv_desc)
+            arabic_name = escape_html(raw_arabic_name)
 
             sector = escape_html(str(row.get("sector", "N/A")).strip())
             tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
@@ -473,7 +538,7 @@ def run_once():
             stock_lines.append(f"🏢 القطاع: {sector}")
             stock_lines.append(f"💵 السعر: {price:.2f} ر.س | التغير: +{current_change:.1f}% | Vol: {int(volume):,}")
 
-            news = fetch_live_news(ticker, stocks_dict.get(ticker, ticker))
+            news = fetch_live_news(ticker, raw_arabic_name)
             if news:
                 stock_lines.append("📰 الأخبار والمحفزات:")
                 for title, link, date, source in news:
