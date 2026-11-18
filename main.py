@@ -22,12 +22,12 @@ SCAN_START_MINUTES = 10 * 60          # 10:00
 SCAN_END_MINUTES = 16 * 60            # 16:00
 
 # الحد الأدنى لزيادة التغير حتى يُعاد إرسال السهم
-MIN_CHANGE_INCREASE = 0.5
+MIN_CHANGE_INCREASE = 0.3
 
-# فلاتر مخففة لتناسب السوق السعودي
-MIN_DAILY_CHANGE = 0.5
-MIN_VOLUME = 5_000
-MIN_RELATIVE_VOLUME = 0.5
+# فلاتر مخففة لتناسب السوق السعودي وضمان عدم خلو النتائج
+MIN_DAILY_CHANGE = 0.2
+MIN_VOLUME = 2_000
+MIN_RELATIVE_VOLUME = 0.2
 NEWS_CACHE = {}
 
 # عدد الأسهم في بطاقة الأسهم الفعالة
@@ -73,7 +73,6 @@ def get_saudi_stocks_dict():
         "1180": "الأهلي", "1111": "تداول", "7200": "امآيإس", "7202": "سلوشنز",
         "7203": "علم", "7010": "STC", "7020": "موبايلي", "7030": "زين",
         "2082": "أكوا", "2083": "مرافق", "5110": "الكهرباء", "4210": "الخزف",
-        # الأسهم الحديثة والظاهرة في الصور
         "9542": "كيير", "9595": "دبليوإسإم", "4144": "رعوم", "9612": "سما",
         "9578": "أطلس", "9552": "توب", "7201": "البحر", "4310": "معرفة",
         "6050": "السعودية", "4080": "سيناد", "4230": "ريد", "9549": "نسيج",
@@ -103,52 +102,48 @@ def screens():
         col("close") > 0,
         col("change") >= MIN_DAILY_CHANGE,
         col("volume") >= MIN_VOLUME,
-        col("relative_volume_10d_calc") >= MIN_RELATIVE_VOLUME,
     ]
     early_momentum = common_momentum + [col("change") <= 3.0]
     
     intraday_momentum = [
         col("close") > 0,
-        col("change") >= 0.03,
-        col("change") <= 7.0,
+        col("change") >= 0.01,
+        col("change") <= 8.0,
         col("volume") >= MIN_VOLUME,
-        col("relative_volume_10d_calc") >= MIN_RELATIVE_VOLUME,
     ]
     
     strong_momentum = common_momentum
     extra = ["close", "change", "volume"]
     return extra, "change", {
-        "1️⃣ زخم مبكر (0.5% - 3.0%)": early_momentum,
-        "2️⃣ زخم لحظي (0.03% - 7.0%)": intraday_momentum,
-        "3️⃣ زخم قوي (0.5% فأعلى)": strong_momentum,
+        "1️⃣ زخم مبكر (0.2% - 3.0%)": early_momentum,
+        "2️⃣ زخم لحظي (0.01% - 8.0%)": intraday_momentum,
+        "3️⃣ زخم قوي (0.2% فأعلى)": strong_momentum,
     }
 
 
 def run_screen(filters, columns, sort_col):
-    query = (
-        Query()
-        .set_markets("ksa")
-        .select(*columns)
-        .where(*filters)
-        .order_by(sort_col, ascending=False)
-        .limit(300)
-    )
     try:
+        query = (
+            Query()
+            .set_markets("ksa")
+            .select(*columns)
+            .where(*filters)
+            .order_by(sort_col, ascending=False)
+            .limit(300)
+        )
         _, df = query.get_scanner_data()
+        if df is not None and not df.empty:
+            df["clean_name"] = df["name"].astype(str).str.replace("TADAWUL:", "").str.strip()
+            return df
     except Exception as e:
-        print(f"خطأ في الاستعلام من TradingView: {e}")
-        return None
-
-    if df is not None and not df.empty:
-        df["clean_name"] = df["name"].astype(str).str.replace("TADAWUL:", "").str.strip()
-        return df
-    return df
+        print(f"⚠️ خطأ في الاستعلام من TradingView: {e}")
+    return None
 
 
 def load_seen():
     today = datetime.now(RIYADH).strftime("%Y-%m-%d")
     try:
-        with open(SEEN_FILE) as f:
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if data.get("date") == today:
             return (
@@ -166,14 +161,17 @@ def load_seen():
 
 
 def save_seen(today, alerted, last_run_timestamp, last_card_timestamp, card_seen):
-    with open(SEEN_FILE, "w") as f:
-        json.dump({
-            "date": today,
-            "alerted": alerted,
-            "last_run_timestamp": last_run_timestamp,
-            "last_card_timestamp": last_card_timestamp,
-            "card_seen": card_seen,
-        }, f, indent=2, ensure_ascii=False)
+    try:
+        with open(SEEN_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "date": today,
+                "alerted": alerted,
+                "last_run_timestamp": last_run_timestamp,
+                "last_card_timestamp": last_card_timestamp,
+                "card_seen": card_seen,
+            }, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء حفظ الملف المحلي: {e}")
 
 
 def send(text):
@@ -219,7 +217,7 @@ def fetch_live_news(ticker, company_name):
             "https://news.google.com/rss/search",
             params={"q": query, "hl": "ar", "gl": "SA", "ceid": "SA:ar"},
             headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15,
+            timeout=10,
         )
         response.raise_for_status()
         root = ET.fromstring(response.content)
@@ -234,26 +232,16 @@ def fetch_live_news(ticker, company_name):
             source = (source_el.text or "").strip() if source_el is not None else ""
             if not title or not link:
                 continue
-            try:
-                final_link = requests.get(
-                    link, headers={"User-Agent": "Mozilla/5.0"},
-                    allow_redirects=True, timeout=8
-                ).url
-            except Exception:
-                final_link = link
-            if not any(domain in final_link.lower() for domain in allowed):
-                continue
-            key = (title, final_link)
+            key = (title, link)
             if key in seen:
                 continue
             seen.add(key)
-            results.append((title, final_link, date, source))
-            if len(results) >= 3:
+            results.append((title, link, date, source))
+            if len(results) >= 2:
                 break
         NEWS_CACHE[cache_key] = results
         return results
-    except Exception as e:
-        print(f"تعذر جلب أخبار {ticker}: {e}")
+    except Exception:
         NEWS_CACHE[cache_key] = []
         return []
 
@@ -308,65 +296,61 @@ def should_alert(ticker, current_change, alerted):
 
 
 def fetch_top_active_stocks(stocks_dict):
-    """جلب أعلى الأسهم نشاطاً مع تنظيف الأسماء وضبطها لتفادي التداخل"""
     filters = [
         col("close") > 0,
-        col("change") >= 0.1,
+        col("change") >= 0.05,
         col("volume") >= MIN_VOLUME,
     ]
     columns = ["name", "close", "change", "volume", "description"]
-    query = (
-        Query()
-        .set_markets("ksa")
-        .select(*columns)
-        .where(*filters)
-        .order_by("change", ascending=False)
-        .limit(50)
-    )
     try:
+        query = (
+            Query()
+            .set_markets("ksa")
+            .select(*columns)
+            .where(*filters)
+            .order_by("change", ascending=False)
+            .limit(50)
+        )
         _, df = query.get_scanner_data()
-    except Exception as e:
-        print(f"خطأ في جلب الأسهم الفعالة: {e}")
-        return []
+        if df is None or df.empty:
+            return []
 
-    if df is None or df.empty:
-        return []
+        df["clean_name"] = df["name"].astype(str).str.replace("TADAWUL:", "").str.strip()
+        results = []
+        for _, row in df.iterrows():
+            ticker = str(row.get("clean_name", "")).strip()
+            if not ticker:
+                continue
+            price = float(row["close"]) if row["close"] else 0.0
+            change = float(row["change"]) if row["change"] else 0.0
+            volume = float(row["volume"]) if row["volume"] else 0.0
 
-    df["clean_name"] = df["name"].astype(str).str.replace("TADAWUL:", "").str.strip()
-    results = []
-    for _, row in df.iterrows():
-        ticker = str(row.get("clean_name", "")).strip()
-        if not ticker:
-            continue
-        price = float(row["close"]) if row["close"] else 0.0
-        change = float(row["change"]) if row["change"] else 0.0
-        volume = float(row["volume"]) if row["volume"] else 0.0
-
-        # أخذ الاسم بدقة من القاموس، وإذا لم يوجد يتم إعطاء اسم نظيف مرتبط بالرمز
-        arabic = stocks_dict.get(ticker)
-        if arabic:
-            name = arabic
-        else:
-            desc = str(row.get("description", "") or "").strip()
-            if desc and not any(ord(c) < 128 for c in desc[:3]):
-                name = short_name(desc)
+            arabic = stocks_dict.get(ticker)
+            if arabic:
+                name = arabic
             else:
-                name = f"سهم {ticker}"
+                desc = str(row.get("description", "") or "").strip()
+                if desc and not any(ord(c) < 128 for c in desc[:3]):
+                    name = short_name(desc)
+                else:
+                    name = f"سهم {ticker}"
 
-        results.append({
-            "ticker": ticker,
-            "name": name,
-            "price": price,
-            "change": change,
-            "volume": volume,
-        })
-        if len(results) >= TOP_ACTIVE_COUNT:
-            break
-    return results
+            results.append({
+                "ticker": ticker,
+                "name": name,
+                "price": price,
+                "change": change,
+                "volume": volume,
+            })
+            if len(results) >= TOP_ACTIVE_COUNT:
+                break
+        return results
+    except Exception as e:
+        print(f"⚠️ خطأ في جلب الأسهم الفعالة: {e}")
+        return []
 
 
 def build_active_card(stocks, now_riyadh):
-    """بناء بطاقة الأسهم الفعالة بتنسيق ثابت وسلس يمنع تداخل الأرقام والأسعار"""
     time_str = now_riyadh.strftime("%I:%M %p").lstrip("0")
     header = (
         f"⏱ <b>الأسهم الفعالة · لايف · آخر 3 دقائق</b>\n"
@@ -381,7 +365,6 @@ def build_active_card(stocks, now_riyadh):
         name = escape_html(s["name"])
         tv_url = f"https://www.tradingview.com/chart/?symbol=TADAWUL:{ticker}"
 
-        # تنسيق مرتب يضمن عدم نزول السعر لسطر جديد
         line = (
             f"{i}. {name} "
             f"<a href=\"{tv_url}\">{ticker}</a> "
@@ -390,20 +373,6 @@ def build_active_card(stocks, now_riyadh):
         lines.append(line)
 
     return "\n".join(lines)
-
-
-def send_active_card(stocks_dict, now_riyadh, card_seen):
-    stocks = fetch_top_active_stocks(stocks_dict)
-    if not stocks:
-        print("⚠️ لا توجد أسهم فعالة للبطاقة")
-        return card_seen
-
-    text = build_active_card(stocks, now_riyadh)
-    send(text)
-
-    new_card_seen = {s["ticker"]: s["change"] for s in stocks}
-    print(f"📋 أُرسلت بطاقة الأسهم الفعالة ({len(stocks)} أسهم)")
-    return new_card_seen
 
 
 def run_once():
@@ -416,6 +385,7 @@ def run_once():
 
     today, alerted, last_run_timestamp, last_card_timestamp, card_seen = load_seen()
     now_timestamp = time.time()
+    stocks_dict = get_saudi_stocks_dict()
 
     # —— 1) بطاقة الأسهم الفعالة كل 3 دقائق ——
     current_slot = minutes_now // CARD_INTERVAL_MINUTES
@@ -428,33 +398,28 @@ def run_once():
     should_send_card = (last_card_timestamp == 0) or (current_slot != last_card_slot)
 
     if should_send_card:
-        stocks_dict = get_saudi_stocks_dict()
-        card_seen = send_active_card(stocks_dict, now_riyadh, card_seen)
-        last_card_timestamp = now_timestamp
-        save_seen(today, alerted, last_run_timestamp, last_card_timestamp, card_seen)
-        print(f"✅ بطاقة الأسهم الفعالة أُرسلت (الشريحة {current_slot})")
-    else:
-        next_slot_minute = (current_slot + 1) * CARD_INTERVAL_MINUTES
-        remaining_card = max(1, next_slot_minute - minutes_now)
-        print(f"⏳ بطاقة الأسهم الفعالة: الشريحة الحالية مُرسلة، المتبقي تقريباً {remaining_card} دقيقة")
+        stocks = fetch_top_active_stocks(stocks_dict)
+        if stocks:
+            text = build_active_card(stocks, now_riyadh)
+            send(text)
+            card_seen = {s["ticker"]: s["change"] for s in stocks}
+            last_card_timestamp = now_timestamp
+            print(f"📋 أُرسلت بطاقة الأسهم الفعالة ({len(stocks)} أسهم)")
+        else:
+            print("⚠️ لم يتم العثور على أسهم نشطة لإرسال البطاقة حالياً")
 
     # —— 2) التنبيهات التفصيلية كل 5 دقائق ——
     elapsed = now_timestamp - last_run_timestamp if last_run_timestamp > 0 else CHECK_INTERVAL_SECONDS + 1
     if last_run_timestamp > 0 and elapsed < CHECK_INTERVAL_SECONDS:
         remaining = int(CHECK_INTERVAL_SECONDS - elapsed)
-        print(f"⏳ لم تمضِ 5 دقائق بعد. المتبقي: {remaining} ثانية.")
+        print(f"⏳ لم تمضِ 5 دقائق بعد لتنفيذ الفحص التفصيلي. المتبقي: {remaining} ثانية.")
         save_seen(today, alerted, last_run_timestamp, last_card_timestamp, card_seen)
         return
 
     print(f"🚀 جاري تنفيذ الفحص التفصيلي... ({now_riyadh:%H:%M:%S})")
 
     extra, sort_col, defs = screens()
-    stocks_dict = get_saudi_stocks_dict()
-
-    tech_cols = [
-        "high", "low", "sector", "description",
-        "relative_volume_10d_calc"
-    ]
+    tech_cols = ["high", "low", "sector", "description"]
     columns = list(dict.fromkeys(["name", "close", "volume"] + extra + tech_cols))
     price_c, chg_c, vol_c = "close", "change", "volume"
 
@@ -462,14 +427,9 @@ def run_once():
     new_alerts_count = 0
 
     for label, filters in defs.items():
-        try:
-            df = run_screen(filters, columns, sort_col)
-        except Exception as e:
-            print(f"[السوق السعودي/{label}] error: {e}")
-            continue
-
+        df = run_screen(filters, columns, sort_col)
         if df is None or df.empty:
-            print(f"[السوق السعودي/{label}] 0 matches")
+            print(f"[السوق السعودي/{label}] 0 matches أو خطأ في الاستعلام")
             continue
 
         results = []
@@ -479,14 +439,13 @@ def run_once():
                 continue
 
             current_change = float(row[chg_c]) if row[chg_c] else 0.0
-
             if not should_alert(ticker_name, current_change, alerted):
                 continue
 
             results.append((ticker_name, row, current_change))
             already_sent_this_run.add(ticker_name)
 
-        print(f"[السوق السعودي/{label}] {len(results)} matches (بعد فلتر التكرار)")
+        print(f"[السوق السعودي/{label}] {len(results)} matches بعد الفلترة")
 
         if not results:
             continue
@@ -542,8 +501,9 @@ def run_once():
         footer = "\nللفرز فقط، تأكد من البيانات قبل أي قرار."
         send_chunked(header, blocks, footer)
 
+    # تحديث وقت تشغيل الفحص التفصيلي فقط إذا تم إنجازه بنجاح
     save_seen(today, alerted, now_timestamp, last_card_timestamp, card_seen)
-    print(f"✅ انتهى الفحص | تنبيهات جديدة: {new_alerts_count}")
+    print(f"✅ انتهى الفحص | تنبيهات جديدة أُرسلت: {new_alerts_count}")
 
 
 if __name__ == "__main__":
